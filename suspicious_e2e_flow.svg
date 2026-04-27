@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  security_hub — Suspicious E2E (발표용)
+  Figma 편집: 각 스텝은 id로 레이어 분리됨
+  Canvas: 1300 x 420
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 420" width="1300" height="420">
+  <defs>
+    <marker id="arr-gray" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
+      <polygon points="0 0.5, 9 3.5, 0 6.5" fill="#CBD5E1"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
+      <polygon points="0 0.5, 9 3.5, 0 6.5" fill="#F97316"/>
+    </marker>
+  </defs>
+
+  <!-- ▌배경 -->
+  <rect width="1300" height="420" fill="#F8FAFC"/>
+
+  <!-- ▌타이틀 바 -->
+  <g id="title">
+    <rect width="1300" height="62" fill="#0F172A"/>
+    <text x="650" y="22" text-anchor="middle"
+          font-family="'Segoe UI','Helvetica Neue',sans-serif"
+          font-size="10" fill="#475569" letter-spacing="4" font-weight="500">SUSPICIOUS PATH · END-TO-END</text>
+    <text x="650" y="50" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR',sans-serif"
+          font-size="23" fill="#FFFFFF" font-weight="800">🟡  의심 (Suspicious) 판정 시나리오</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════════
+       STEP 1 — SMS / URL 입력  (Flutter)
+       x=89, center=172, color=Blue
+  ══════════════════════════════════════════════════════ -->
+  <g id="step-1-input">
+    <rect x="89" y="78" width="166" height="200" rx="14" fill="#EFF6FF" stroke="#3B82F6" stroke-width="2.5"/>
+    <!-- 번호 뱃지 -->
+    <circle cx="113" cy="101" r="14" fill="#1D4ED8"/>
+    <text x="113" y="106" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="13" fill="#FFFFFF" font-weight="800">1</text>
+    <!-- 아이콘 -->
+    <text x="172" y="168" text-anchor="middle"
+          font-family="'Segoe UI Emoji','Apple Color Emoji',sans-serif" font-size="40">📩</text>
+    <!-- 레이블 -->
+    <text x="172" y="202" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="15" fill="#1E3A5F" font-weight="700">SMS / URL 입력</text>
+    <text x="172" y="221" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="11" fill="#3B82F6">의심 문자 붙여넣기</text>
+    <!-- 플랫폼 뱃지 -->
+    <rect x="109" y="253" width="126" height="18" rx="7" fill="#1D4ED8"/>
+    <text x="172" y="266" text-anchor="middle"
+          font-family="'Segoe UI','Malgun Gothic',sans-serif"
+          font-size="10" fill="#FFFFFF" font-weight="600">📱 Flutter App</text>
+  </g>
+
+  <!-- → 화살표 1-2 -->
+  <line x1="255" y1="178" x2="299" y2="178"
+        stroke="#CBD5E1" stroke-width="2.2" marker-end="url(#arr-gray)"/>
+
+  <!-- ══════════════════════════════════════════════════════
+       STEP 2 — URL 파싱 & 확장  (Backend)
+       x=299, center=382, color=Green
+  ══════════════════════════════════════════════════════ -->
+  <g id="step-2-url">
+    <rect x="299" y="78" width="166" height="200" rx="14" fill="#F0FDF4" stroke="#22C55E" stroke-width="2.5"/>
+    <circle cx="323" cy="101" r="14" fill="#059669"/>
+    <text x="323" y="106" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="13" fill="#FFFFFF" font-weight="800">2</text>
+    <text x="382" y="168" text-anchor="middle"
+          font-family="'Segoe UI Emoji','Apple Color Emoji',sans-serif" font-size="40">🔗</text>
+    <text x="382" y="202" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="15" fill="#14532D" font-weight="700">URL 파싱 &amp; 확장</text>
+    <text x="382" y="221" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="11" fill="#059669">단축 URL 해제 포함</text>
+    <rect x="319" y="253" width="126" height="18" rx="7" fill="#059669"/>
+    <text x="382" y="266" text-anchor="middle"
+          font-family="'Segoe UI','Malgun Gothic',sans-serif"
+          font-size="10" fill="#FFFFFF" font-weight="600">⚡ FastAPI Backend</text>
+  </g>
+
+  <!-- → 화살표 2-3 -->
+  <line x1="465" y1="178" x2="509" y2="178"
+        stroke="#CBD5E1" stroke-width="2.2" marker-end="url(#arr-gray)"/>
+
+  <!-- ══════════════════════════════════════════════════════
+       STEP 3 — 블랙·화이트리스트 모두 미스  (Backend)
+       x=509, center=592, color=Red
+  ══════════════════════════════════════════════════════ -->
+  <g id="step-3-db-miss">
+    <rect x="509" y="78" width="166" height="200" rx="14" fill="#FEF2F2" stroke="#EF4444" stroke-width="2.5"/>
+    <circle cx="533" cy="101" r="14" fill="#DC2626"/>
+    <text x="533" y="106" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="13" fill="#FFFFFF" font-weight="800">3</text>
+    <text x="592" y="168" text-anchor="middle"
+          font-family="'Segoe UI Emoji','Apple Color Emoji',sans-serif" font-size="40">🚫</text>
+    <text x="592" y="199" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="14" fill="#7F1D1D" font-weight="700">블랙·화이트리스트</text>
+    <text x="592" y="216" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="14" fill="#7F1D1D" font-weight="700">모두 미스</text>
+    <!-- MISS 뱃지 두 개 -->
+    <rect x="530" y="228" width="56" height="17" rx="5" fill="#FEE2E2" stroke="#FCA5A5" stroke-width="1"/>
+    <text x="558" y="240" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="10" fill="#DC2626" font-weight="700">블랙 MISS</text>
+    <rect x="594" y="228" width="56" height="17" rx="5" fill="#FEE2E2" stroke="#FCA5A5" stroke-width="1"/>
+    <text x="622" y="240" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="10" fill="#DC2626" font-weight="700">화이트 MISS</text>
+    <rect x="529" y="253" width="126" height="18" rx="7" fill="#DC2626"/>
+    <text x="592" y="266" text-anchor="middle"
+          font-family="'Segoe UI','Malgun Gothic',sans-serif"
+          font-size="10" fill="#FFFFFF" font-weight="600">⚡ FastAPI Backend</text>
+  </g>
+
+  <!-- → 화살표 3-4 -->
+  <line x1="675" y1="178" x2="719" y2="178"
+        stroke="#CBD5E1" stroke-width="2.2" marker-end="url(#arr-gray)"/>
+
+  <!-- ══════════════════════════════════════════════════════
+       STEP 4 — Gemini AI 분석  (Backend)
+       x=719, center=802, color=Amber
+  ══════════════════════════════════════════════════════ -->
+  <g id="step-4-gemini">
+    <rect x="719" y="78" width="166" height="200" rx="14" fill="#FFFBEB" stroke="#F59E0B" stroke-width="2.5"/>
+    <circle cx="743" cy="101" r="14" fill="#D97706"/>
+    <text x="743" y="106" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="13" fill="#FFFFFF" font-weight="800">4</text>
+    <text x="802" y="168" text-anchor="middle"
+          font-family="'Segoe UI Emoji','Apple Color Emoji',sans-serif" font-size="40">🤖</text>
+    <text x="802" y="202" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="15" fill="#78350F" font-weight="700">Gemini AI 분석</text>
+    <text x="802" y="221" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="11" fill="#D97706">의심 사유 설명 생성</text>
+    <rect x="739" y="253" width="126" height="18" rx="7" fill="#D97706"/>
+    <text x="802" y="266" text-anchor="middle"
+          font-family="'Segoe UI','Malgun Gothic',sans-serif"
+          font-size="10" fill="#FFFFFF" font-weight="600">⚡ FastAPI + Gemini</text>
+  </g>
+
+  <!-- → 화살표 4-5 (오렌지 — 판정 진입) -->
+  <line x1="885" y1="178" x2="929" y2="178"
+        stroke="#F97316" stroke-width="2.5" marker-end="url(#arr-orange)"/>
+
+  <!-- ══════════════════════════════════════════════════════
+       STEP 5 — 의심 판정 결과  (Flutter)  ★ HIGHLIGHT
+       x=929, center=1012, color=Orange (강조)
+  ══════════════════════════════════════════════════════ -->
+  <g id="step-5-result">
+    <!-- 발광 효과 레이어 -->
+    <rect x="925" y="73" width="174" height="210" rx="17" fill="#FED7AA" opacity="0.55"/>
+    <!-- 메인 박스 -->
+    <rect x="929" y="78" width="166" height="200" rx="14" fill="#FFF7ED" stroke="#F97316" stroke-width="3"/>
+    <!-- "판정 완료" 말풍선 뱃지 -->
+    <rect x="979" y="70" width="66" height="20" rx="7" fill="#F97316"/>
+    <text x="1012" y="84" text-anchor="middle"
+          font-family="'Malgun Gothic','Segoe UI',sans-serif"
+          font-size="11" fill="#FFFFFF" font-weight="700">🟡 판정 완료</text>
+    <!-- 번호 뱃지 -->
+    <circle cx="953" cy="101" r="14" fill="#EA580C"/>
+    <text x="953" y="106" text-anchor="middle"
+          font-family="'Segoe UI',sans-serif" font-size="13" fill="#FFFFFF" font-weight="800">5</text>
+    <!-- 아이콘 -->
+    <text x="1012" y="168" text-anchor="middle"
+          font-family="'Segoe UI Emoji','Apple Color Emoji',sans-serif" font-size="40">🟡</text>
+    <!-- 레이블 -->
+    <text x="1012" y="202" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="15" fill="#7C2D12" font-weight="800">의심 판정 결과</text>
+    <text x="1012" y="221" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="11" fill="#EA580C">가상환경 테스트 유도</text>
+    <rect x="949" y="253" width="126" height="18" rx="7" fill="#EA580C"/>
+    <text x="1012" y="266" text-anchor="middle"
+          font-family="'Segoe UI','Malgun Gothic',sans-serif"
+          font-size="10" fill="#FFFFFF" font-weight="600">📱 Flutter App</text>
+  </g>
+
+  <!-- → 화살표 5 → Sandbox -->
+  <line x1="1095" y1="178" x2="1131" y2="178"
+        stroke="#EA580C" stroke-width="2.2" marker-end="url(#arr-orange)"/>
+
+  <!-- ══════════════════════════════════════════════════════
+       최종 도착지 — VirtualSandboxScreen
+       x=1131, center=1171, dark
+  ══════════════════════════════════════════════════════ -->
+  <g id="destination-sandbox">
+    <rect x="1131" y="128" width="102" height="100" rx="14" fill="#0F172A" stroke="#334155" stroke-width="2"/>
+    <text x="1182" y="173" text-anchor="middle"
+          font-family="'Segoe UI Emoji','Apple Color Emoji',sans-serif" font-size="32">🛡</text>
+    <text x="1182" y="198" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="11" fill="#4ADE80" font-weight="700">가상 환경</text>
+    <text x="1182" y="214" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="10" fill="#64748B">Sandbox</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════════
+       하단 — 3가지 판정 결과 (현재 경로 강조)
+  ══════════════════════════════════════════════════════ -->
+  <g id="outcome-strip">
+    <!-- 구분선 -->
+    <line x1="40" y1="295" x2="1260" y2="295" stroke="#E2E8F0" stroke-width="1.2"/>
+
+    <!-- 안전 (Safe) -->
+    <rect x="268" y="308" width="220" height="50" rx="10" fill="#F0FDF4" stroke="#86EFAC" stroke-width="1.5" opacity="0.6"/>
+    <text x="378" y="330" text-anchor="middle"
+          font-family="'Segoe UI Emoji',sans-serif" font-size="18">🟢</text>
+    <text x="378" y="349" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="12" fill="#15803D" font-weight="600">안전 (SAFE)</text>
+
+    <!-- 의심 (Suspicious) — 현재 경로 강조 -->
+    <rect x="540" y="304" width="220" height="58" rx="10" fill="#FFF7ED" stroke="#F97316" stroke-width="2.5"/>
+    <!-- 현재 경로 표시 -->
+    <text x="650" y="321" text-anchor="middle"
+          font-family="'Malgun Gothic','Segoe UI',sans-serif"
+          font-size="10" fill="#F97316" font-weight="700">▲ 현재 경로</text>
+    <text x="650" y="338" text-anchor="middle"
+          font-family="'Segoe UI Emoji',sans-serif" font-size="18">🟡</text>
+    <text x="650" y="356" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="12" fill="#EA580C" font-weight="700">의심 (SUSPICIOUS)</text>
+
+    <!-- 위험 (Danger) -->
+    <rect x="812" y="308" width="220" height="50" rx="10" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5" opacity="0.6"/>
+    <text x="922" y="330" text-anchor="middle"
+          font-family="'Segoe UI Emoji',sans-serif" font-size="18">🔴</text>
+    <text x="922" y="349" text-anchor="middle"
+          font-family="'Malgun Gothic','Apple SD Gothic Neo',sans-serif"
+          font-size="12" fill="#DC2626" font-weight="600">위험 (DANGER)</text>
+  </g>
+
+  <!-- ▌푸터 -->
+  <g id="footer">
+    <text x="650" y="395" text-anchor="middle"
+          font-family="'Malgun Gothic','Segoe UI',sans-serif"
+          font-size="11" fill="#94A3B8">
+      블랙리스트 미스  ·  화이트리스트 미스  →  Gemini AI 의심 사유 생성  →  가상 샌드박스 유도
+    </text>
+  </g>
+
+</svg>

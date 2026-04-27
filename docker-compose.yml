@@ -1,0 +1,9 @@
+# docker-compose.yml
+# 목적: Browserless 이미지 사전 캐시용.
+# browserless-init 서비스는 실행 즉시 종료되며 상시 동작하지 않는다.
+# FastAPI(uvicorn)는 이 파일과 무관하게 venv에서 직접 실행한다.
+
+services:
+  browserless-init:
+    image: ghcr.io/browserless/chromium:latest
+    command: echo "이미지 준비 완료"
