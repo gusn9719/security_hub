@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+backend/security_hub.db
+backend/security_hub.db-shm
+backend/security_hub.db-wal
+
+# Flutter
+frontend/build/
+frontend/.flutter-plugins
+frontend/.dart_tool/
+.dart_tool/
+
+# Data
+data/raw/
+
+# IDE / Tools
+.DS_Store
+*.log
+.claude/settings.local.json
+.idea/
+
+# OS
+Thumbs.db
