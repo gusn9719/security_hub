@@ -6,6 +6,7 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/analysis_result.dart';
 
@@ -72,6 +73,69 @@ class ApiService {
       }
     } on SocketException {
       throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sprint 7-A: kasmweb/chromium 직접 탐방 API
+  // ---------------------------------------------------------------------------
+
+  /// kasmweb/chromium 컨테이너를 생성하고 noVNC 세션 정보를 반환한다.
+  ///
+  /// [url]: Chromium이 처음 열 대상 URL
+  /// 반환값: {"container_id": str, "novnc_url": str, "network_name": str}
+  /// 예외: 네트워크 오류, 서버 오류(4xx/5xx), Docker 미실행(503) 시 [Exception] throw
+  static Future<Map<String, dynamic>> startBrowseSessionV2(
+    String url, {
+    int screenWidth = 1080,
+    int screenHeight = 1920,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/sandbox/browse');
+
+    try {
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode({
+          'url': url,
+          'screen_width': screenWidth,
+          'screen_height': screenHeight,
+        }),
+      ).timeout(
+        const Duration(seconds: 90),
+        onTimeout: () => throw Exception('컨테이너 시작 응답 시간이 초과되었습니다. (최대 90초)'),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      } else if (response.statusCode == 503) {
+        throw Exception('Docker가 실행 중이지 않습니다. Docker Desktop을 시작한 후 다시 시도해 주세요.');
+      } else {
+        throw Exception('서버 오류 (${response.statusCode}): ${response.body}');
+      }
+    } on SocketException {
+      throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
+    }
+  }
+
+  /// container_id의 kasmweb/chromium 컨테이너를 종료하고 네트워크를 삭제한다.
+  ///
+  /// [containerId]: startBrowseSessionV2()가 반환한 컨테이너 ID
+  /// [networkName]: startBrowseSessionV2()가 반환한 네트워크 이름
+  /// 실패해도 예외를 throw하지 않는다 (dispose fire-and-forget 용도).
+  static Future<void> terminateBrowseSession(
+    String containerId,
+    String networkName,
+  ) async {
+    final uri = Uri.parse(
+      '$_baseUrl/sandbox/browse/$containerId?network_name=${Uri.encodeComponent(networkName)}',
+    );
+
+    try {
+      await http.delete(uri).timeout(const Duration(seconds: 10));
+    } catch (e) {
+      // 5분 타임아웃으로 자동 정리되므로 dispose 실패는 조용히 무시
+      debugPrint('[ApiService] terminateBrowseSession 실패 (무시): $e');
     }
   }
 }

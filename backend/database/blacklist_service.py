@@ -5,14 +5,17 @@
 #   - Sprint 4: 최초 작성
 #   - Sprint 5A: extract_urls 정규식 강화 — 프로토콜 없는 도메인도 추출,
 #                check_blacklist 시그니처를 urls 리스트 기반으로 분리
+#   - Sprint 5E: normalize_url 이중 디코딩 추가 (EP 항목 대응),
+#                check_blacklist 3순위 registered_domain 매칭 추가
 # =============================================================================
 
 import re
 import hashlib
 import logging
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from database.db_init import get_ro_connection
+from services.url_validator import get_registered_domain
 
 logger = logging.getLogger(__name__)
 
@@ -121,14 +124,21 @@ def extract_urls(text: str) -> list[str]:
 
 def normalize_url(url: str) -> str:
     """
-    URL을 정규화한다. (소문자 변환, 트레일링 슬래시 제거)
+    URL을 정규화한다.
+
+    순서:
+      1. 이중 URL 디코딩 (%252F → %2F → /) — KISA EP 항목: 인코딩 우회 방지
+      2. 소문자 변환
+      3. 트레일링 슬래시 제거
 
     [url]: 원본 URL 문자열
     반환값: 정규화된 URL 문자열
     """
-    url = url.strip().lower()
-    url = url.rstrip("/")
-    return url
+    url = url.strip()
+    # 1. 이중 디코딩: 필터 우회를 위한 %25xx 패턴 해제
+    url = unquote(unquote(url))
+    # 2. 소문자 + 3. 트레일링 슬래시 제거
+    return url.lower().rstrip("/")
 
 
 def extract_domain(url: str) -> str:
@@ -163,10 +173,12 @@ def check_blacklist(urls: list[str]) -> dict | None:
     """
     URL 리스트를 블랙리스트 DB와 대조한다.
 
-    조회 전략:
-      1. URL별로 url_hash(정확 일치) 우선
-      2. 미스 시 domain(도메인 일치) 폴백
-      3. 첫 번째 히트 발생 시 즉시 반환
+    조회 전략 (우선순위 순):
+      1. url_hash 정확 일치 — 동일 URL 재방문 즉시 차단
+      2. domain 일치 — 하위 경로가 달라도 같은 도메인 차단
+      3. registered_domain 일치 — 서브도메인만 다른 동일 악성 도메인 차단
+         (예: ccr.dtyh.best 블랙리스트 → other.dtyh.best 도 차단)
+      첫 번째 히트 발생 시 즉시 반환
 
     [urls]: extract_urls() 결과 (또는 단축 URL 해제 후 정규화된 URL 리스트)
     반환값: 히트된 row 딕셔너리 | None (미스 시)
@@ -182,6 +194,7 @@ def check_blacklist(urls: list[str]) -> dict | None:
             normalized = normalize_url(raw_url)
             url_hash = compute_url_hash(normalized)
             domain = extract_domain(normalized)
+            reg_domain = get_registered_domain(normalized)
 
             # ── 1순위: url_hash 정확 일치 ────────────────────────────────
             row = conn.execute(
@@ -200,6 +213,18 @@ def check_blacklist(urls: list[str]) -> dict | None:
                 ).fetchone()
                 if row:
                     logger.warning(f"[블랙리스트] domain 히트 — {domain}")
+                    return dict(row)
+
+            # ── 3순위: registered_domain 일치 ────────────────────────────
+            # 피싱 도메인은 서브도메인만 바꿔 재사용하는 경우가 많으므로
+            # 등록 도메인 단위로 차단. domain 과 중복 체크 방지.
+            if reg_domain and reg_domain != domain:
+                row = conn.execute(
+                    "SELECT * FROM blacklist WHERE registered_domain = ? LIMIT 1",
+                    (reg_domain,),
+                ).fetchone()
+                if row:
+                    logger.warning(f"[블랙리스트] registered_domain 히트 — {reg_domain}")
                     return dict(row)
 
     logger.info("[블랙리스트] 미스")

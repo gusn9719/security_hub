@@ -1,11 +1,18 @@
 # =============================================================================
 # backend/services/gemini_service.py
-# 역할: Gemini 호출 캡슐화 (DANGER/SUSPICIOUS 사유 설명 생성 전용)
-# 설계 원칙:
-#   - Gemini는 판정자가 아니라 설명자(DC-04). 판정 변경 절대 없음.
-#   - 호출 실패 시 템플릿 폴백으로 서비스 중단 없음.
+# 역할: Gemini 호출 캡슐화 — 7-B 샌드박스 결과 요약 전용 (DC-25)
+#
 # 변경 이력:
 #   - Sprint 5A: analysis_service.py 에서 분리 신설
+#   - Sprint 5E: DC-25 — /analyze 파이프라인에서 Gemini 제거.
+#                generate_danger_explanation / generate_suspicious_explanation 삭제.
+#                역할을 7-B Browserless/Playwright 결과 요약으로 한정.
+#                /analyze 판정 설명은 explanation_service.py 가 담당.
+#
+# 설계 원칙:
+#   - Gemini는 판정자가 아니라 요약자. 판정 결과(safe/suspicious/danger)는
+#     호출자가 이미 결정한 후 전달한다.
+#   - 호출 실패 시 템플릿 폴백으로 서비스 중단 없음.
 # =============================================================================
 
 import os
@@ -18,33 +25,16 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "gemini-2.5-flash"
 
+# 7-B 요약 실패 시 폴백 메시지
+_FINDINGS_FALLBACK = "샌드박스 분석이 완료되었습니다. 상세 내역은 탐지 항목을 확인하세요."
 
-# =============================================================================
-# 폴백 템플릿
-# =============================================================================
-DANGER_TEMPLATES: dict[str, str] = {
-    "공공기관": "이 URL은 공공기관을 사칭한 스미싱으로, KISA C-TAS에 신고된 전적이 있습니다.",
-    "택배":     "이 URL은 택배사를 사칭한 스미싱으로, KISA C-TAS에 신고된 전적이 있습니다.",
-    "금융":     "이 URL은 금융기관을 사칭한 스미싱으로, KISA C-TAS에 신고된 전적이 있습니다.",
-    "기타":     "이 URL은 KISA C-TAS에 악성 URL로 신고된 전적이 있습니다.",
-}
-
-SUSPICIOUS_FALLBACK = (
-    "입력하신 URL에서 파악하기 어려운 요소가 발견되었습니다. "
-    "가상 환경에서 안전하게 확인해 보시길 권장합니다."
-)
-
-
-# =============================================================================
-# Gemini 서비스
-# =============================================================================
 
 class GeminiService:
     """
     Gemini 호출 싱글턴.
 
-    공개 메서드 두 개 모두 "설명만" 생성한다 — 판정 결과(safe/suspicious/danger)는
-    호출자(analysis_service)가 책임진다.
+    역할: 7-B 자동 분석(Browserless/Playwright) 탐지 결과 → 한국어 요약문 생성.
+    /analyze 파이프라인 판정 설명은 explanation_service.py 가 담당한다 (DC-25).
     """
 
     def __init__(self) -> None:
@@ -55,30 +45,49 @@ class GeminiService:
         else:
             self._client = genai.Client(api_key=api_key)
 
-    # -------------------------------------------------------------------------
-    # DANGER: 블랙리스트 히트 시 위험 사유 설명
-    # -------------------------------------------------------------------------
-    def generate_danger_explanation(self, sms_text: str, category: str | None) -> str:
+    def generate_findings_summary(
+        self,
+        url: str,
+        findings: list[str],
+    ) -> str:
         """
-        블랙리스트 히트 문자에 대해 "왜 위험한지" 한국어 설명을 생성한다.
+        7-B 샌드박스 분석 탐지 항목을 한국어 요약문으로 변환한다.
 
-        [sms_text]: 사용자 입력 문자 원문
-        [category]: 블랙리스트 카테고리 (공공기관/택배/금융/기타 또는 None)
-        반환값: 한국어 설명 문자열 (Gemini 실패 시 카테고리 템플릿 폴백)
+        Browserless/Playwright 가 실제 브라우저로 URL 을 방문하고 수집한
+        findings(예: ["팝업 3회 감지", "외부 스크립트 로드 2건"]) 를 받아
+        사용자가 이해하기 쉬운 2~3문장 요약을 생성한다.
+
+        판정 결과(안전/의심/위험)는 포함하지 않는다.
+
+        [url]     : 분석 대상 URL
+        [findings]: 샌드박스 탐지 항목 목록
+        반환값: 한국어 요약 문자열 (Gemini 실패 시 _FINDINGS_FALLBACK)
         """
-        fallback = DANGER_TEMPLATES.get(category or "", DANGER_TEMPLATES["기타"])
+        if not findings:
+            return _FINDINGS_FALLBACK
+
+        fallback = (
+            f"샌드박스에서 {len(findings)}개 항목이 탐지되었습니다: "
+            + ", ".join(findings[:3])
+            + ("..." if len(findings) > 3 else "")
+            + "."
+        )
 
         if self._client is None:
             return fallback
 
+        findings_text = "\n".join(f"- {f}" for f in findings)
         prompt = f"""
 당신은 사이버 보안 전문가입니다.
-다음 텍스트는 KISA C-TAS에 악성 피싱(스미싱)으로 이미 신고된 문자입니다.
-사용자가 이해하기 쉽게 이 문자가 왜 위험한지, 어떤 수법인지 2~3문장으로 설명해주세요.
-판정 결과(안전/의심/위험)는 절대 언급하지 말고, 설명만 작성하세요.
+아래는 가상 브라우저로 URL을 방문했을 때 자동으로 탐지된 항목들입니다.
+사용자가 이해하기 쉽게 이 탐지 결과가 무엇을 의미하는지 2~3문장으로 요약해 주세요.
+판정 결과(안전/의심/위험)는 절대 언급하지 말고, 탐지 내용 설명만 작성하세요.
 
-[문자 내용]
-{sms_text}
+[분석 URL]
+{url}
+
+[탐지 항목]
+{findings_text}
 """.strip()
 
         try:
@@ -89,46 +98,8 @@ class GeminiService:
             text = (response.text or "").strip()
             return text if text else fallback
         except Exception as e:
-            logger.error(f"[Gemini] DANGER 설명 생성 실패 — {e}")
+            logger.error("[Gemini] 7-B 요약 생성 실패 — %s", e)
             return fallback
-
-    # -------------------------------------------------------------------------
-    # SUSPICIOUS: 블랙·화이트 모두 미스 시 의심 사유 설명 (DC-06)
-    # -------------------------------------------------------------------------
-    def generate_suspicious_explanation(self, url: str, sms_text: str) -> str:
-        """
-        미확인 URL 에 대해 "왜 의심스러운지" 한국어 설명을 생성한다.
-
-        [url]: 분석 대상 URL (대표 1건)
-        [sms_text]: 사용자 입력 문자 원문 (맥락 제공용)
-        반환값: 한국어 설명 문자열 (Gemini 실패 시 SUSPICIOUS_FALLBACK)
-        """
-        if self._client is None:
-            return SUSPICIOUS_FALLBACK
-
-        prompt = f"""
-당신은 사이버 보안 전문가입니다.
-아래 문자 메시지와 URL이 왜 의심스러운지 사용자가 이해하기 쉽게 2~3문장으로 설명해주세요.
-긴급함 유도, 사칭, 비정상적인 도메인 등 구체적인 근거를 포함하세요.
-판정 결과(안전/의심/위험)는 절대 언급하지 말고, 설명만 작성하세요.
-
-[입력 텍스트]
-{sms_text}
-
-[대상 URL]
-{url}
-""".strip()
-
-        try:
-            response = self._client.models.generate_content(
-                model=_MODEL,
-                contents=prompt,
-            )
-            text = (response.text or "").strip()
-            return text if text else SUSPICIOUS_FALLBACK
-        except Exception as e:
-            logger.error(f"[Gemini] SUSPICIOUS 설명 생성 실패 — {e}")
-            return SUSPICIOUS_FALLBACK
 
 
 # 싱글턴 인스턴스
