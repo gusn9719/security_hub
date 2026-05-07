@@ -21,8 +21,8 @@ import logging
 import os
 import re
 import sys
-from uuid import uuid4
 from urllib.parse import urlparse
+
 
 logger = logging.getLogger(__name__)
 

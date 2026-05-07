@@ -27,6 +27,12 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isLoading = false;
   StreamSubscription<Map<String, String>>? _smsSub;
 
+  // 클립보드 감지 배너 — setState 기반 인트리(in-tree) 위젯
+  // OverlayEntry / ScaffoldMessenger 양쪽 모두 사용하지 않아 프레임워크 quirk 완전 회피
+  bool _clipboardBannerVisible = false;
+  String _clipboardPendingText = '';
+  Timer? _clipboardBannerTimer;
+
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
@@ -60,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    _clipboardBannerTimer?.cancel();
     _smsSub?.cancel();
     _textController.dispose();
     _animationController.dispose();
@@ -108,29 +115,47 @@ class _HomeScreenState extends State<HomeScreen>
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim() ?? '';
     if (text.isEmpty || !mounted) return;
-
     if (!containsUrl(text)) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('클립보드에서 URL이 감지되었습니다.'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: const Color(0xFF1A56DB),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(
-          label: '불러오기',
-          textColor: Colors.white,
-          onPressed: () => _textController.text = text,
-        ),
-      ),
+    // Android 12+ '클립보드에서 붙여넣음' 시스템 알림(약 1.5초)이 사라진 뒤 표시
+    // 클립보드 읽기 직후 즉시 배너를 띄우면 시스템 알림과 겹침
+    await Future.delayed(const Duration(milliseconds: 1800));
+    if (!mounted) return;
+
+    _showClipboardOverlay(text);
+  }
+
+  /// 클립보드 URL 감지 배너를 표시한다.
+  /// setState 로 _clipboardBannerVisible 를 켜면 build() 의 Stack 이
+  /// 자동으로 Positioned 배너를 렌더링한다 — OverlayEntry/ScaffoldMessenger 미사용.
+  void _showClipboardOverlay(String text) {
+    _removeClipboardOverlay(); // 이전 타이머·배너 정리
+    if (!mounted) return;
+    setState(() {
+      _clipboardBannerVisible = true;
+      _clipboardPendingText = text;
+    });
+    // 7초 후 setState 로 직접 숨김 — 프레임워크 큐와 무관
+    _clipboardBannerTimer = Timer(
+      const Duration(seconds: 7),
+      _removeClipboardOverlay,
     );
+  }
+
+  /// 클립보드 배너와 타이머를 안전하게 제거한다.
+  void _removeClipboardOverlay() {
+    _clipboardBannerTimer?.cancel();
+    _clipboardBannerTimer = null;
+    if (mounted) {
+      setState(() => _clipboardBannerVisible = false);
+    }
   }
 
   Future<void> _pasteFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim() ?? '';
     if (!mounted) return;
+
     if (text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -138,10 +163,26 @@ class _HomeScreenState extends State<HomeScreen>
           behavior: SnackBarBehavior.floating,
           backgroundColor: Colors.grey[800],
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 2),
         ),
       );
       return;
     }
+
+    // URL이 없는 텍스트는 불러오지 않음
+    if (!containsUrl(text)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('클립보드에 URL이 포함되어 있지 않습니다.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.grey[800],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
     _textController.text = text;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -349,20 +390,33 @@ class _HomeScreenState extends State<HomeScreen>
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FC),
       appBar: _buildAppBar(),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildInputSection(),
-              const SizedBox(height: 20),
-              _buildAnalyzeButton(),
-              const SizedBox(height: 28),
-              _buildResultSection(),
-            ],
+      body: Stack(
+        fit: StackFit.expand, // Stack 을 body 전체 높이로 확장 — Positioned bottom 기준 고정
+        children: [
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildInputSection(),
+                  const SizedBox(height: 20),
+                  _buildAnalyzeButton(),
+                  const SizedBox(height: 28),
+                  _buildResultSection(),
+                ],
+              ),
+            ),
           ),
-        ),
+          // 클립보드 감지 배너 — setState 기반, 7초 후 자동 해제
+          if (_clipboardBannerVisible)
+            Positioned(
+              bottom: MediaQuery.of(context).padding.bottom + 16,
+              left: 16,
+              right: 16,
+              child: _buildClipboardBanner(),
+            ),
+        ],
       ),
     );
   }
@@ -503,6 +557,47 @@ class _HomeScreenState extends State<HomeScreen>
       child: SlideTransition(
         position: _slideAnimation,
         child: _buildResultCard(_currentResult!),
+      ),
+    );
+  }
+
+  /// 클립보드 URL 감지 배너 위젯 (Stack 하단에 Positioned 로 삽입됨)
+  Widget _buildClipboardBanner() {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A56DB),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: const [
+            BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2)),
+          ],
+        ),
+        child: Row(
+          children: [
+            const Expanded(
+              child: Text(
+                '클립보드에서 URL이 감지되었습니다.',
+                style: TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ),
+            TextButton(
+              onPressed: () {
+                _textController.text = _clipboardPendingText;
+                _removeClipboardOverlay();
+              },
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+              ),
+              child: const Text(
+                '불러오기',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
