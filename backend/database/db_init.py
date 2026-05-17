@@ -139,6 +139,22 @@ def init_db() -> None:
             ON sandbox_results (expires_at)
         """)
 
+        # ── sandbox_results: 7-B 자동탐지 신규 컬럼 마이그레이션 ────────
+        sr_cols = {r[1] for r in conn.execute("PRAGMA table_info(sandbox_results)").fetchall()}
+        sr_migrations = [
+            ("session_id",     "TEXT"),
+            ("sandbox_score",  "INTEGER DEFAULT 0"),
+            ("summary",        "TEXT"),
+            ("screenshots",    "TEXT"),
+            ("final_url",      "TEXT"),
+            ("redirect_count", "INTEGER DEFAULT 0"),
+            ("error",          "TEXT"),
+        ]
+        for col, definition in sr_migrations:
+            if col not in sr_cols:
+                conn.execute(f"ALTER TABLE sandbox_results ADD COLUMN {col} {definition}")
+                logger.info(f"[DB] sandbox_results.{col} 컬럼 추가 완료")
+
         # ── migration: 기존 테이블에 누락 컬럼 추가 ─────────────────────
         # 주의: registered_domain 인덱스는 컬럼 존재 확인 후 생성해야 한다.
         # CREATE INDEX IF NOT EXISTS 는 인덱스명 충돌만 무시하고,
@@ -183,5 +199,4 @@ def init_db() -> None:
             )
             logger.info(f"[DB] 구버전 시드 {old_seed_count}건 제거 완료 — CSV 로더로 재적재 필요")
 
-        conn.commit()
     logger.info(f"[DB] 초기화 완료 — {DB_PATH}")

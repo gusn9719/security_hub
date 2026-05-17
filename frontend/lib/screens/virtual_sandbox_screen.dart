@@ -1,10 +1,17 @@
 // =============================================================================
 // lib/screens/virtual_sandbox_screen.dart
-// 역할: 백엔드 Browserless 샌드박스에 URL을 분석 요청하고 결과(스크린샷·탐지 항목)를 표시.
-// 주의: WebView로 URL을 직접 여는 것이 아니라 서버 측 격리 컨테이너에서 실행한다.
+// 역할: 7-A 직접 탐방 / 7-B AI 자동탐지 모드 선택 및 결과 표시.
+//       AI 자동탐지는 POST /sandbox/auto-test 를 호출하며
+//       가짜 개인정보 주입 후 피싱 폼 여부를 탐지한다.
+//
+// 변경 이력:
+//   - Sprint 7:   최초 작성 (/sandbox/run 기반)
+//   - Sprint 7-B: /sandbox/auto-test 연동, sandbox_score·summary·screenshots 표시,
+//                 스크린샷 탭→전체화면(InteractiveViewer 핀치줌) 추가.
 // =============================================================================
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -25,9 +32,22 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
   bool _modeSelected = false;
   bool _isBrowseStarting = false;
   String? _error;
+
+  // 7-B 자동탐지 결과 상태
   List<String> _findings = [];
-  String? _screenshotInitial;
-  String? _screenshotAfter3s;
+  List<Uint8List> _screenshots = []; // 최대 3장
+  int _sandboxScore = 0;
+  String _summary = '';
+  String _finalUrl = '';
+  int _redirectCount = 0;
+  bool _cached = false;
+
+  // 스크린샷 순서별 레이블 (최대 3장)
+  static const _screenshotLabels = [
+    '① 접속 직후',
+    '② 가짜 정보 주입 후',
+    '③ 제출 시도 후',
+  ];
 
   @override
   void initState() {
@@ -35,13 +55,13 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
     // 모드 선택 UI를 먼저 보여주기 위해 자동 실행하지 않는다.
   }
 
+  // ── 7-A 직접 탐방 ────────────────────────────────────────────────────────
+
   Future<void> _startDirectBrowse() async {
     setState(() => _isBrowseStarting = true);
     try {
       final mq = MediaQuery.of(context);
-      // 논리 픽셀(CSS px) 사용: 컨테이너 내부는 DPR이 없어 1px=1CSS px이므로
-      // 물리 픽셀을 보내면 1080px = 데스크탑 뷰포트가 된다.
-      // 논리 픽셀(예: 411px)을 보내면 모바일 레이아웃이 트리거된다.
+      // 논리 픽셀 사용: 컨테이너 내부는 DPR 없이 1px=1CSS px
       final screenWidth = mq.size.width.toInt();
       final screenHeight = mq.size.height.toInt();
       final result = await ApiService.startBrowseSessionV2(
@@ -75,15 +95,31 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
     }
   }
 
-  Future<void> _runSandbox() async {
+  // ── 7-B AI 자동탐지 ──────────────────────────────────────────────────────
+
+  Future<void> _runAutoTest() async {
     try {
-      final result = await ApiService.startSandbox(widget.url);
+      final result = await ApiService.startAutoTest(widget.url);
       if (!mounted) return;
+
+      // base64 → Uint8List 디코딩 (디코딩 실패 항목은 건너뜀)
+      final rawShots = List<String>.from(result['screenshots'] ?? []);
+      final parsedShots = <Uint8List>[];
+      for (final s in rawShots) {
+        try {
+          parsedShots.add(base64Decode(s));
+        } catch (_) {}
+      }
+
       setState(() {
         _findings = List<String>.from(result['findings'] ?? []);
-        _screenshotInitial = result['screenshot_initial'] as String?;
-        _screenshotAfter3s = result['screenshot_after3s'] as String?;
+        _screenshots = parsedShots;
+        _sandboxScore = (result['sandbox_score'] as int?) ?? 0;
+        _summary = (result['summary'] as String?) ?? '';
+        _finalUrl = (result['final_url'] as String?) ?? widget.url;
+        _redirectCount = (result['redirect_count'] as int?) ?? 0;
         _error = result['error'] as String?;
+        _cached = (result['cached'] as bool?) ?? false;
         _isLoading = false;
       });
     } catch (e) {
@@ -94,6 +130,47 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
       });
     }
   }
+
+  // ── 전체화면 스크린샷 뷰어 ────────────────────────────────────────────────
+
+  /// 스크린샷을 전체화면으로 열고 InteractiveViewer로 핀치줌을 지원한다.
+  void _openFullScreen(Uint8List bytes, String title) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+            title: Text(
+              title,
+              style: const TextStyle(fontSize: 14, color: Colors.white),
+            ),
+            leading: const BackButton(color: Colors.white),
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 6.0,
+              child: Image.memory(
+                bytes,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image_outlined,
+                  color: Colors.white38,
+                  size: 64,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -107,7 +184,11 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           children: [
             const Text(
               '가상 샌드박스 분석',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Colors.white),
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
             ),
             Text(
               widget.url,
@@ -130,6 +211,8 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
     );
   }
 
+  // ── 모드 선택 화면 ────────────────────────────────────────────────────────
+
   Widget _buildModeSelectionView() {
     return Center(
       child: Padding(
@@ -141,7 +224,11 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
             const SizedBox(height: 20),
             const Text(
               '분석 모드를 선택하세요',
-              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
@@ -151,6 +238,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 36),
+            // 직접 탐방 버튼
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -197,21 +285,28 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
               ),
             ),
             const SizedBox(height: 14),
+            // AI 자동탐지 버튼
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: () {
                   setState(() => _modeSelected = true);
-                  _runSandbox();
+                  _runAutoTest();
                 },
                 icon: const Icon(Icons.smart_toy_outlined),
                 label: const Padding(
                   padding: EdgeInsets.symmetric(vertical: 4),
                   child: Column(
                     children: [
-                      Text('AI 자동 분석', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                      Text(
+                        'AI 자동 분석',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                      ),
                       SizedBox(height: 2),
-                      Text('Playwright가 자동으로 위협을 탐지', style: TextStyle(fontSize: 11)),
+                      Text(
+                        '가짜 정보 주입으로 피싱 폼 자동 탐지',
+                        style: TextStyle(fontSize: 11),
+                      ),
                     ],
                   ),
                 ),
@@ -219,7 +314,9 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
                   backgroundColor: const Color(0xFF374151),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
               ),
             ),
@@ -228,6 +325,8 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
       ),
     );
   }
+
+  // ── 공통 위젯 ─────────────────────────────────────────────────────────────
 
   Widget _buildWarningBanner() {
     return Container(
@@ -262,12 +361,12 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           CircularProgressIndicator(color: Color(0xFF60A5FA)),
           SizedBox(height: 20),
           Text(
-            '격리 컨테이너 실행 중...',
+            'AI 자동 분석 중...',
             style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
           ),
           SizedBox(height: 6),
           Text(
-            'Docker 컨테이너 생성 및 URL 분석에 최대 60초가 소요됩니다.',
+            'Docker 컨테이너 기동 및 피싱 폼 탐지에 최대 2분이 소요됩니다.',
             style: TextStyle(color: Color(0xFF6B7280), fontSize: 12),
             textAlign: TextAlign.center,
           ),
@@ -276,34 +375,49 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
     );
   }
 
+  // ── 결과 화면 ─────────────────────────────────────────────────────────────
+
   Widget _buildResultView() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_error != null) _buildErrorCard(),
-          // findings가 있을 때만 탐지 결과 카드 표시
-          // (API 호출 자체가 실패하면 findings=[]이므로 빈 카드가 뜨지 않도록)
+          if (_error != null) ...[
+            _buildErrorCard(),
+            const SizedBox(height: 12),
+          ],
+          _buildScoreCard(),
+          if (_summary.isNotEmpty && _summary != '탐지된 위험 요소 없음') ...[
+            const SizedBox(height: 12),
+            _buildSummaryCard(),
+          ],
           if (_findings.isNotEmpty) ...[
+            const SizedBox(height: 12),
             _buildFindingsCard(),
-            const SizedBox(height: 16),
           ],
-          if (_screenshotInitial != null) ...[
-            _buildScreenshotCard('접속 직후 스크린샷', _screenshotInitial!),
-            const SizedBox(height: 16),
-          ],
-          if (_screenshotAfter3s != null)
-            _buildScreenshotCard('3초 후 스크린샷', _screenshotAfter3s!),
+          // 스크린샷 목록 (최대 3장)
+          ..._screenshots.asMap().entries.map((entry) {
+            final idx = entry.key;
+            final label = idx < _screenshotLabels.length
+                ? _screenshotLabels[idx]
+                : '스크린샷 ${idx + 1}';
+            return Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: _buildScreenshotCard(label, entry.value),
+            );
+          }),
+          const SizedBox(height: 8),
         ],
       ),
     );
   }
 
+  // ── 결과 카드 위젯 ────────────────────────────────────────────────────────
+
   Widget _buildErrorCard() {
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: const Color(0xFF7F1D1D),
@@ -318,7 +432,164 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           Expanded(
             child: Text(
               _error!,
-              style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 13, height: 1.5),
+              style: const TextStyle(
+                color: Color(0xFFFCA5A5),
+                fontSize: 13,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// AI 위협 점수 카드 (0~29 이상없음 · 30~59 주의 · 60+ 위험)
+  Widget _buildScoreCard() {
+    final Color scoreColor;
+    final String scoreLabel;
+    final IconData scoreIcon;
+
+    if (_sandboxScore >= 60) {
+      scoreColor = const Color(0xFFDC2626);
+      scoreLabel = '위험';
+      scoreIcon = Icons.dangerous_rounded;
+    } else if (_sandboxScore >= 30) {
+      scoreColor = const Color(0xFFD97706);
+      scoreLabel = '주의';
+      scoreIcon = Icons.warning_amber_rounded;
+    } else {
+      scoreColor = const Color(0xFF10B981);
+      scoreLabel = '이상없음';
+      scoreIcon = Icons.check_circle_rounded;
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1F2937),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scoreColor.withOpacity(0.4)),
+      ),
+      child: Row(
+        children: [
+          // 점수 원형 뱃지
+          Container(
+            width: 68,
+            height: 68,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: scoreColor.withOpacity(0.15),
+              border: Border.all(color: scoreColor, width: 2),
+            ),
+            child: Center(
+              child: Text(
+                '$_sandboxScore',
+                style: TextStyle(
+                  color: scoreColor,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(scoreIcon, color: scoreColor, size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      'AI 위협 점수: $scoreLabel',
+                      style: TextStyle(
+                        color: scoreColor,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_redirectCount > 0) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    '리다이렉트 $_redirectCount회 감지',
+                    style: const TextStyle(
+                      color: Color(0xFF9CA3AF),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+                if (_finalUrl.isNotEmpty && _finalUrl != widget.url) ...[
+                  const SizedBox(height: 5),
+                  Text(
+                    '최종 URL: $_finalUrl',
+                    style: const TextStyle(
+                      color: Color(0xFF9CA3AF),
+                      fontSize: 11,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 2,
+                  ),
+                ],
+                if (_cached) ...[
+                  const SizedBox(height: 5),
+                  const Row(
+                    children: [
+                      Icon(Icons.cached_rounded, color: Color(0xFF6B7280), size: 12),
+                      SizedBox(width: 4),
+                      Text(
+                        '24h 캐시된 결과',
+                        style: TextStyle(color: Color(0xFF6B7280), fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Gemini AI 요약 카드 (summary가 없거나 기본값이면 표시하지 않음)
+  Widget _buildSummaryCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1B4B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF4338CA).withOpacity(0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.auto_awesome_rounded, color: Color(0xFF818CF8), size: 15),
+              SizedBox(width: 6),
+              Text(
+                'AI 분석 요약',
+                style: TextStyle(
+                  color: Color(0xFF818CF8),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _summary,
+            style: const TextStyle(
+              color: Color(0xFFE0E7FF),
+              fontSize: 13,
+              height: 1.65,
             ),
           ),
         ],
@@ -327,10 +598,15 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
   }
 
   Widget _buildFindingsCard() {
-    final hasWarnings = _findings.any((f) => f.startsWith('[경고]') || f.startsWith('[오류]'));
-    final headerColor = hasWarnings ? const Color(0xFFD97706) : const Color(0xFF10B981);
-    final borderColor = hasWarnings ? const Color(0xFF92400E) : const Color(0xFF065F46);
-    final bgColor = hasWarnings ? const Color(0xFF1C1207) : const Color(0xFF052E16);
+    final hasWarnings = _findings.any(
+      (f) => f.startsWith('[경고]') || f.startsWith('[오류]'),
+    );
+    final headerColor =
+        hasWarnings ? const Color(0xFFD97706) : const Color(0xFF10B981);
+    final borderColor =
+        hasWarnings ? const Color(0xFF92400E) : const Color(0xFF065F46);
+    final bgColor =
+        hasWarnings ? const Color(0xFF1C1207) : const Color(0xFF052E16);
 
     return Container(
       width: double.infinity,
@@ -346,7 +622,9 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           Row(
             children: [
               Icon(
-                hasWarnings ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+                hasWarnings
+                    ? Icons.warning_amber_rounded
+                    : Icons.check_circle_outline,
                 color: headerColor,
                 size: 18,
               ),
@@ -368,7 +646,10 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('• ', style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13)),
+                  const Text(
+                    '• ',
+                    style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13),
+                  ),
                   Expanded(
                     child: Text(
                       f,
@@ -388,40 +669,86 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
     );
   }
 
-  Widget _buildScreenshotCard(String title, String base64Data) {
-    // base64Decode는 FormatException을 던질 수 있으므로 반드시 try-catch 처리
-    Widget imageWidget;
-    try {
-      final bytes = base64Decode(base64Data);
-      imageWidget = ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Image.memory(
-          bytes,
-          width: double.infinity,
-          fit: BoxFit.fitWidth,
-          errorBuilder: (_, _, _) => _buildScreenshotPlaceholder(),
-        ),
-      );
-    } catch (_) {
-      imageWidget = _buildScreenshotPlaceholder();
-    }
-
+  /// 스크린샷 카드.
+  ///
+  /// 탭하면 전체화면으로 열리고 [InteractiveViewer]로 핀치줌을 지원한다.
+  Widget _buildScreenshotCard(String title, Uint8List bytes) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 타이틀 + "탭하여 확대" 힌트
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: Text(
-            title,
-            style: const TextStyle(
-              color: Color(0xFF9CA3AF),
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.3,
-            ),
+          child: Row(
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Color(0xFF9CA3AF),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.3,
+                ),
+              ),
+              const Spacer(),
+              const Icon(
+                Icons.zoom_in_rounded,
+                color: Color(0xFF6B7280),
+                size: 13,
+              ),
+              const SizedBox(width: 3),
+              const Text(
+                '탭하여 확대',
+                style: TextStyle(color: Color(0xFF6B7280), fontSize: 11),
+              ),
+            ],
           ),
         ),
-        imageWidget,
+        // 이미지 + 전체화면 오버레이 버튼
+        GestureDetector(
+          onTap: () => _openFullScreen(bytes, title),
+          child: Stack(
+            alignment: Alignment.bottomRight,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.memory(
+                  bytes,
+                  width: double.infinity,
+                  fit: BoxFit.fitWidth,
+                  errorBuilder: (_, __, ___) => _buildScreenshotPlaceholder(),
+                ),
+              ),
+              // 전체화면 힌트 배지
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.zoom_out_map_rounded,
+                        color: Colors.white,
+                        size: 11,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        '전체화면',
+                        style: TextStyle(color: Colors.white, fontSize: 10),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
