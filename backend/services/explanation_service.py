@@ -178,6 +178,34 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
+    # 7-B 샌드박스 점수 시그널 (ANL-11)
+    "sandbox_danger_score": {
+        "icon":  "🧪",
+        "title": "가상 환경 분석에서 위험으로 판정",
+        "desc":  (
+            "이 URL은 이전에 AI 자동 분석(가상 샌드박스)을 통해 "
+            "높은 위험 점수(70점 이상)를 받은 이력이 있습니다."
+        ),
+    },
+
+    # 사용자 투표 시그널
+    "prior_danger_vote_high": {
+        "icon":  "👥",
+        "title": "다수 사용자가 위험으로 신고한 링크",
+        "desc":  (
+            "10명 이상의 이전 방문자가 이 링크를 위험하다고 평가했습니다. "
+            "접속하지 않을 것을 강력히 권장합니다."
+        ),
+    },
+    "prior_danger_vote_low": {
+        "icon":  "👥",
+        "title": "사용자 위험 신고 이력 있음",
+        "desc":  (
+            "이전 방문자 중 일부가 이 링크를 위험하다고 평가했습니다. "
+            "접속에 주의하세요."
+        ),
+    },
+
     # 화이트리스트 Open Redirect
     "open_redirect": {
         "icon":  "🔀",

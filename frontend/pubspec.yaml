@@ -38,6 +38,8 @@ dependencies:
   url_launcher: ^6.3.2
   permission_handler: ^11.3.1
   flutter_inappwebview: ^6.1.5
+  shared_preferences: ^2.3.0
+  uuid: ^4.5.1
 
 dev_dependencies:
   flutter_test:

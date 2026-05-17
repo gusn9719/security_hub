@@ -76,6 +76,22 @@ class AnalyzeResponse(BaseModel):
     cards: list[ExplanationCard] = Field(default_factory=list)
 
 
+class VoteRequest(BaseModel):
+    """POST /sandbox/votes 요청 스키마."""
+
+    url: str
+    session_id: str
+    vote: str = Field(..., pattern=r"^(safe|danger)$")
+    device_uuid: str = Field(default="")
+
+
+class VoteResponse(BaseModel):
+    """POST /sandbox/votes 응답 스키마."""
+
+    success: bool
+    message: str
+
+
 class SandboxAutoTestRequest(BaseModel):
     """POST /sandbox/auto-test 요청 스키마."""
 

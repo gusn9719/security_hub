@@ -49,6 +49,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
   bool _isLoading = true;
   String? _errorMessage;
   bool _sessionExpired = false;
+  bool _voteDone = false;
 
   InAppWebViewController? _webViewController;
 
@@ -59,13 +60,108 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
     super.dispose();
   }
 
+  // ── 투표 모달 ─────────────────────────────────────────────────────────────
+
+  Future<bool> _showVoteModal() async {
+    if (_voteDone) return true;
+
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1F2937),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.how_to_vote_rounded, color: Color(0xFF60A5FA), size: 22),
+            SizedBox(width: 8),
+            Text(
+              '탐방 결과 투표',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '직접 방문 후 이 사이트가 어떻게 느껴지셨나요?\n투표는 데이터베이스 개선에 활용됩니다.',
+              style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13, height: 1.5),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(ctx, 'safe'),
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: const Text('안전'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF10B981),
+                      side: const BorderSide(color: Color(0xFF10B981)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(ctx, 'danger'),
+                    icon: const Icon(Icons.dangerous_rounded, size: 18),
+                    label: const Text('위험'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFDC2626),
+                      side: const BorderSide(color: Color(0xFFDC2626)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('건너뜀', style: TextStyle(color: Color(0xFF6B7280))),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && mounted) {
+      setState(() => _voteDone = true);
+      ApiService.submitVote(widget.url, widget.containerId, result);
+    }
+    return true;
+  }
+
+  Future<void> _exitWithVote() async {
+    await _showVoteModal();
+    if (mounted) Navigator.pop(context);
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        await _showVoteModal();
+        if (mounted) Navigator.pop(context);
+      },
+      child: Scaffold(
       backgroundColor: const Color(0xFF111827),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1F2937),
         foregroundColor: Colors.white,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: _exitWithVote,
+        ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -84,6 +180,16 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             ),
           ],
         ),
+        actions: [
+          TextButton.icon(
+            onPressed: _exitWithVote,
+            icon: const Icon(Icons.stop_circle_outlined, size: 18, color: Color(0xFFF87171)),
+            label: const Text(
+              '탐방 종료',
+              style: TextStyle(color: Color(0xFFF87171), fontSize: 13),
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -91,6 +197,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           Expanded(child: _buildBody()),
         ],
       ),
+    ),
     );
   }
 
@@ -593,7 +700,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
               ),
               const SizedBox(height: 28),
               ElevatedButton.icon(
-                onPressed: () => Navigator.pop(context),
+                onPressed: _exitWithVote,
                 icon: const Icon(Icons.refresh_rounded),
                 label: const Text('새 세션 시작'),
                 style: ElevatedButton.styleFrom(
