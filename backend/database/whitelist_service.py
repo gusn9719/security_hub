@@ -1,12 +1,15 @@
 # =============================================================================
 # backend/database/whitelist_service.py
-# 역할: 화이트리스트 DB 조회 — match_mode 기반 3종 매칭 + Open Redirect 예외 검출
+# 역할: 화이트리스트 DB 조회 — match_mode 기반 매칭 + Open Redirect 예외 검출
 # 변경 이력:
 #   - Sprint 5A: 최초 작성 (TEMP_WHITELIST 대체)
 #   - Sprint 5A (2차): match_mode 컬럼 반영, 서브도메인 버그 수정, seed 제거
 #   - Sprint 5C: OPEN_REDIRECT_PARAMS → SUSPICIOUS_QUERY_PATTERNS (카테고리 매핑 확장),
 #                _get_suspicious_categories() 신규 추가,
 #                WhitelistResult.suspicious_categories 필드 추가
+#   - Sprint 5E: DC-001 — pattern match_mode 제거.
+#                .go.kr 형태 TLD 패턴은 신뢰도 낮음(임의 하위 도메인 허용 위험),
+#                개별 도메인 등록 또는 suffix 모드로 대체해야 한다.
 # =============================================================================
 
 import logging
@@ -67,9 +70,9 @@ class WhitelistService:
                    (tistory.com → evil.tistory.com 은 SAFE 불가)
       - 'suffix' : 등록 도메인이 입력 도메인과 일치하거나 서브도메인일 때 SAFE
                    (naver.com → login.naver.com, mail.naver.com 도 SAFE)
-      - 'pattern': DB 도메인이 입력 도메인의 접미사일 때 SAFE
-                   (.go.kr → mois.go.kr, nts.go.kr 모두 SAFE)
-                   DB 저장 형태: '.go.kr' (앞에 . 포함)
+      - 'pattern': DC-001 에 의해 제거됨. 해당 행은 조회에서 무시한다.
+                   사유: .go.kr 형태는 임의 하위 도메인을 전부 허용해 위험.
+                   대안: 개별 도메인을 exact/suffix 모드로 등록할 것.
     """
 
     def is_whitelisted(self, url: str) -> WhitelistResult:
@@ -88,18 +91,16 @@ class WhitelistService:
 
         try:
             with get_ro_connection() as conn:
-                # 구체적인 순서로 조회: exact → suffix → pattern
-                # 같은 도메인이 exact(사칭 고위험)와 pattern(.or.kr 일반) 둘 다 해당될 때
-                # exact가 항상 우선되어야 한다.
+                # exact 우선, suffix 후순 — pattern 은 DC-001 로 제거되어 무시
                 rows = conn.execute(
                     """
                     SELECT domain, match_mode, risk_level
                     FROM whitelist
+                    WHERE match_mode IN ('exact', 'suffix')
                     ORDER BY CASE match_mode
-                        WHEN 'exact'   THEN 1
-                        WHEN 'suffix'  THEN 2
-                        WHEN 'pattern' THEN 3
-                        ELSE 4
+                        WHEN 'exact'  THEN 1
+                        WHEN 'suffix' THEN 2
+                        ELSE 3
                     END
                     """
                 ).fetchall()
@@ -112,13 +113,7 @@ class WhitelistService:
             mode = row["match_mode"]
             risk = row["risk_level"]
 
-            matched = False
-
-            if mode == "pattern":
-                # DB 저장값: '.go.kr' 형태 — 입력 도메인이 패턴으로 끝나야 함
-                matched = domain.endswith(entry_domain)
-
-            elif mode == "suffix":
+            if mode == "suffix":
                 # 정확 일치 or 서브도메인 (e.g. login.naver.com → naver.com)
                 matched = (domain == entry_domain) or domain.endswith("." + entry_domain)
 
@@ -141,16 +136,6 @@ class WhitelistService:
                 )
 
         return WhitelistResult(hit=False)
-
-    def _has_open_redirect(self, url: str) -> bool:
-        """
-        URL 쿼리스트링에 위험 패턴이 있는지 검사한다.
-        감지된 카테고리는 _get_suspicious_categories() 로 별도 조회한다.
-
-        [url]: 분석 대상 URL
-        반환값: 위험 패턴 존재 여부
-        """
-        return bool(self._get_suspicious_categories(url))
 
     def _get_suspicious_categories(self, url: str) -> list[str]:
         """
