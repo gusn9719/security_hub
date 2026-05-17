@@ -26,6 +26,7 @@
 #                0단계 위험 스킴, 5~6단계 평판 캐시, 7단계 휴리스틱 추가.
 # =============================================================================
 
+import asyncio
 import logging
 
 from schemas.analysis import AnalyzeRequest, AnalyzeResponse, RiskStatus
@@ -165,10 +166,13 @@ class AnalysisService:
 
         # ── 6단계: 도메인 평판 조회 (캐시 미스 시) ────────────────────────
         # WHOIS 등록일 + SSL 인증서 조회 (외부 I/O — graceful 처리)
+        # asyncio.to_thread: 블로킹 I/O(WHOIS/SSL)가 이벤트 루프를 점유하지 않도록 분리
         # save_reputation 내부에서 skipped 항목(IP 등)은 자동으로 캐시 제외
         if domain_evidence is None:
             try:
-                domain_evidence = analyze_domain_reputation(primary_url)
+                domain_evidence = await asyncio.to_thread(
+                    analyze_domain_reputation, primary_url
+                )
                 if registered and domain_evidence:
                     save_reputation(registered, domain_evidence)
             except Exception as e:
@@ -194,8 +198,8 @@ class AnalysisService:
         # 점수가 낮아도 "알 수 없음"이지 "안전"이 아니다.
         # SAFE 판정은 화이트리스트 히트(4단계)만 가능.
         logger.info(
-            "[파이프라인] 휴리스틱 SUSPICIOUS — score=%d registered=%s",
-            heuristic.score, registered,
+            "[파이프라인] DC-06 SUSPICIOUS (화이트리스트 미히트) — 휴리스틱=%s score=%d registered=%s",
+            heuristic.verdict, heuristic.score, registered,
         )
         cards = build_explanation_cards(heuristic.triggered, verdict="SUSPICIOUS")
         return AnalyzeResponse(

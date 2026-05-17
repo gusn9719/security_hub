@@ -17,6 +17,7 @@ class ApiService {
   // 실기기 테스트 시: 같은 와이파이의 PC IP로 변경 (예: http://192.168.0.x:8000)
   // TODO: 배포 시 실제 서버 URL로 교체
   // -------------------------------------------------------------------------
+  // static const String _baseUrl = 'http://172.31.57.14:8000';
   static const String _baseUrl = 'http://10.0.2.2:8000';
 
   /// 피싱 의심 텍스트를 백엔드로 전송하고 분석 결과를 반환한다.
@@ -64,6 +65,45 @@ class ApiService {
       ).timeout(
         const Duration(seconds: 60),
         onTimeout: () => throw Exception('샌드박스 응답 시간이 초과되었습니다. (컨테이너 생성 포함 60초)'),
+      );
+
+      if (response.statusCode == 200) {
+        return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      } else {
+        throw Exception('샌드박스 서버 오류 (${response.statusCode})');
+      }
+    } on SocketException {
+      throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sprint 7-B: AI 자동탐지 API (/sandbox/auto-test)
+  // ---------------------------------------------------------------------------
+
+  /// URL을 격리 컨테이너에서 AI가 자동 분석하고 결과를 반환한다.
+  ///
+  /// 가짜 개인정보를 폼에 주입해 피싱 폼 여부를 탐지한다.
+  /// 결과는 24시간 캐시된다.
+  ///
+  /// [url]: 분석할 대상 URL
+  /// 반환값: session_id, sandbox_score, findings, summary, screenshots,
+  ///         final_url, redirect_count, error, cached 등을 담은 Map
+  /// 예외: 네트워크 오류 또는 서버 오류 시 [Exception] throw
+  static Future<Map<String, dynamic>> startAutoTest(String url) async {
+    final uri = Uri.parse('$_baseUrl/sandbox/auto-test');
+
+    try {
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode({'url': url}),
+      ).timeout(
+        const Duration(seconds: 120),
+        onTimeout: () => throw Exception(
+          'AI 자동 분석 응답 시간이 초과되었습니다. '
+          '(컨테이너 기동 포함 최대 120초)',
+        ),
       );
 
       if (response.statusCode == 200) {

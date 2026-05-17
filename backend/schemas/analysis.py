@@ -74,3 +74,38 @@ class AnalyzeResponse(BaseModel):
     description: str
     action_label: str
     cards: list[ExplanationCard] = Field(default_factory=list)
+
+
+class SandboxAutoTestRequest(BaseModel):
+    """POST /sandbox/auto-test 요청 스키마."""
+
+    url: str
+
+
+class SandboxAutoTestResponse(BaseModel):
+    """
+    POST /sandbox/auto-test 응답 스키마.
+
+    Attributes:
+        session_id:     분석 세션 UUID (hex)
+        url:            분석 대상 URL
+        sandbox_score:  룰 기반 위험 점수 (0~100)
+        findings:       탐지된 항목 목록
+        summary:        Gemini 생성 한국어 요약 (폴백 시 findings 나열)
+        screenshots:    base64 JPEG 스크린샷 목록 (최대 3장)
+        final_url:      모든 리다이렉트 후 최종 랜딩 URL
+        redirect_count: 301/302 응답 횟수
+        error:          오류 메시지 (정상 시 None)
+        cached:         캐시에서 반환된 경우 True
+    """
+
+    session_id: str
+    url: str
+    sandbox_score: int
+    findings: list[str]
+    summary: str
+    screenshots: list[str]
+    final_url: str
+    redirect_count: int
+    error: str | None
+    cached: bool = False

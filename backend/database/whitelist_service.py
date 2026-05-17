@@ -137,16 +137,6 @@ class WhitelistService:
 
         return WhitelistResult(hit=False)
 
-    def _has_open_redirect(self, url: str) -> bool:
-        """
-        URL 쿼리스트링에 위험 패턴이 있는지 검사한다.
-        감지된 카테고리는 _get_suspicious_categories() 로 별도 조회한다.
-
-        [url]: 분석 대상 URL
-        반환값: 위험 패턴 존재 여부
-        """
-        return bool(self._get_suspicious_categories(url))
-
     def _get_suspicious_categories(self, url: str) -> list[str]:
         """
         URL 쿼리스트링에서 위험 패턴을 검사하여 감지된 카테고리 목록을 반환한다.

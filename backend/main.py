@@ -66,19 +66,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
     모든 응답에 보안 헤더를 추가한다.
 
-    - X-Content-Type-Options: nosniff        → MIME 타입 스니핑 방지
-    - X-Frame-Options: DENY                  → 클릭재킹 방지
-    - X-XSS-Protection: 1; mode=block        → 구형 브라우저 XSS 필터 활성화
-    - Referrer-Policy: no-referrer           → Referer 헤더로 내부 URL 노출 방지
-    - Content-Security-Policy: default-src 'none'  → API 서버: 리소스 렌더링 없음
+    noVNC 프록시 경로(/sandbox/browse/)는 KasmVNC HTML·JS를 그대로 서빙하므로
+    CSP와 X-Frame-Options를 적용하지 않는다. 이 헤더들을 적용하면
+    WebView가 noVNC JavaScript 실행과 WebSocket 연결을 차단한다.
     """
+    _NOVNC_PREFIX = "/sandbox/browse/"
+
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"]  = "nosniff"
-        response.headers["X-Frame-Options"]          = "DENY"
-        response.headers["X-XSS-Protection"]         = "1; mode=block"
-        response.headers["Referrer-Policy"]           = "no-referrer"
-        response.headers["Content-Security-Policy"]   = "default-src 'none'"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"]        = "1; mode=block"
+        response.headers["Referrer-Policy"]          = "no-referrer"
+        if not request.url.path.startswith(self._NOVNC_PREFIX):
+            response.headers["X-Frame-Options"]          = "DENY"
+            response.headers["Content-Security-Policy"]  = "default-src 'none'"
         return response
 
 

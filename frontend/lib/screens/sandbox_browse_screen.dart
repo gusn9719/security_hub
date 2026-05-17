@@ -4,13 +4,16 @@
 //       사용자가 서버 위 격리 Chromium을 원격 조종하는 화면.
 //
 // [프록시 아키텍처]
-// kasmweb은 6901(HTTPS+WSS)만 사용한다. Android WebView에서 JavaScript가 생성하는
-// wss:// WebSocket은 onReceivedServerTrustAuthRequest로 SSL을 우회할 수 없어
-// VNC 캔버스가 흰 화면으로 남는 문제가 있다.
+// kasmweb은 6901(HTTPS+WSS)만 사용한다. 백엔드가 TCP SSL-strip 프록시를 동작시켜
+// Flutter는 http:// (plain HTTP/WS)로 접속한다.
 //
-// 백엔드가 TCP SSL-strip 프록시를 동작시키므로 Flutter는 http:// (plain HTTP/WS)로
-// 접속한다 — SSL 인증서 문제가 완전히 사라진다.
+// noVNC WebSocket 경로: noVNC URL에 host/port/encrypt=0 파라미터를 명시해
+// 프록시 포트로 ws:// 연결하도록 강제한다 (KasmVNC 커스텀 빌드가 wss:// 를 기본값으로
+// 쓰는 경우 대비). onReceivedServerTrustAuthRequest를 추가해 noVNC가 직접
+// wss:// 로 연결하는 경우에도 자체서명 인증서 거부가 발생하지 않도록 한다.
 // =============================================================================
+
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -121,6 +124,80 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
       children: [
         InAppWebView(
           initialUrlRequest: URLRequest(url: WebUri(widget.novncUrl)),
+          // noVNC가 wss:// 를 강제 사용하는 경우에 대비해 ws:// 로 재작성한다.
+          // AT_DOCUMENT_START 에서 WebSocket 생성자를 가로채므로 noVNC JS 실행 전에 적용된다.
+          initialUserScripts: UnmodifiableListView([
+            UserScript(
+              source: r'''
+                (function() {
+                  // ── 공통: pathname에서 /novnc 까지의 경로를 추출 ──────────────
+                  // 예: /sandbox/browse/abc123/novnc/ → pathBase = /sandbox/browse/abc123/novnc
+                  var pathMatch = window.location.pathname.match(/(.*\/novnc)/);
+                  var pathBase  = pathMatch ? pathMatch[1] : '';
+
+                  // ── 1. WebSocket URL 재작성 ───────────────────────────────────
+                  // noVNC가 wss://host:kasmPort/... 로 직접 연결 시도 → SSL 인증서 오류.
+                  // FastAPI 백엔드 경유 아키텍처에서는 WS 목적지를
+                  //   ws://SERVER:8000/sandbox/browse/{id}/novnc
+                  // 로 재작성해야 FastAPI WS 프록시 핸들러에 도달한다.
+                  // AT_DOCUMENT_START로 서버사이드 주입보다 먼저 실행되어 __shP 플래그로
+                  // 중복 패치를 방지한다.
+                  if (!window.WebSocket || !window.WebSocket.__shP) {
+                    var _WS = window.WebSocket;
+                    var proxyBase = window.location.protocol.replace('http', 'ws')
+                                    + '//' + window.location.host + pathBase;
+                    window.WebSocket = new Proxy(_WS, {
+                      construct: function(target, args) {
+                        if (typeof args[0] === 'string') {
+                          // pathBase가 이미 URL에 포함된 경우 재작성 생략.
+                          // noVNC가 path= URL 파라미터를 읽어 올바른 프록시 경로로
+                          // 연결할 때 이중 경로가 생기는 것을 방지한다.
+                          if (pathBase && args[0].indexOf(pathBase) !== -1) {
+                            console.log('[SecurityHub] WS skip(ok): ' + args[0]);
+                          } else {
+                            var orig = args[0];
+                            // wss?://any-host:any-port → ws://SERVER:8000/sandbox/browse/{id}/novnc
+                            args[0] = args[0].replace(/^wss?:\/\/[^\/]*/, proxyBase);
+                            if (orig !== args[0])
+                              console.log('[SecurityHub] WS rewrite: ' + orig + ' → ' + args[0]);
+                            else
+                              console.log('[SecurityHub] WS: ' + orig);
+                          }
+                        }
+                        return Reflect.construct(target, args);
+                      }
+                    });
+                    window.WebSocket.__shP = 1;
+                  }
+
+                  // ── 2. fetch / XMLHttpRequest 절대경로 재작성 ─────────────────
+                  // kasmVNC noVNC JS가 /api/statistics 등 절대경로로 API를 호출하면
+                  // FastAPI 404 가 반환된다. 절대경로를 /sandbox/browse/{id}/novnc 기준으로
+                  // 재작성해 FastAPI HTTP 프록시를 통해 kasmVNC에 전달한다.
+                  // __shP2 플래그로 서버사이드 주입(</head> 직전)과 중복 패치를 방지한다.
+                  if (!window.__shP2) {
+                    window.__shP2 = 1;
+                    if (pathBase) {
+                      var _f = window.fetch;
+                      if (_f) {
+                        window.fetch = function(u, i) {
+                          if (typeof u === 'string' && u[0] === '/' && u[1] !== '/') u = pathBase + u;
+                          return _f.call(this, u, i);
+                        };
+                      }
+                      var _x = XMLHttpRequest.prototype.open;
+                      XMLHttpRequest.prototype.open = function(m, u, a, us, p) {
+                        if (typeof u === 'string' && u[0] === '/' && u[1] !== '/') u = pathBase + u;
+                        return _x.call(this, m, u, a, us, p);
+                      };
+                      console.log('[SecurityHub] fetch/XHR rewrite active, prefix=' + pathBase);
+                    }
+                  }
+                })();
+              ''',
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+            ),
+          ]),
           initialSettings: InAppWebViewSettings(
             javaScriptEnabled: true,
             useWideViewPort: true,
@@ -144,6 +221,15 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
                   setState(() => _sessionExpired = true);
                 }
               },
+            );
+          },
+          // KasmVNC 자체서명 SSL 인증서 신뢰 — 직접 wss:// 연결 시 cert 오류 방지
+          onReceivedServerTrustAuthRequest: (controller, challenge) async {
+            debugPrint(
+              '[SandboxBrowse] SSL 인증 챌린지: ${challenge.protectionSpace.host}:${challenge.protectionSpace.port}',
+            );
+            return ServerTrustAuthResponse(
+              action: ServerTrustAuthResponseAction.PROCEED,
             );
           },
           // kasmweb KasmVNC HTTP Basic Auth 자동 응답
