@@ -24,11 +24,13 @@ def get_rw_connection() -> sqlite3.Connection:
 
     WAL 모드: 쓰기 중에도 읽기 연결이 블로킹되지 않는다.
     synchronous=NORMAL: WAL 에서 안전하고 성능 좋은 기본값.
+    busy_timeout=5000: 동시 쓰기 충돌 시 최대 5초 대기 후 실패.
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -101,33 +103,57 @@ def init_db() -> None:
         """)
 
         # ── URL 투표 테이블 ──────────────────────────────────────────────
-        # 사용자 피드백 (안전/위험) 수집용. 향후 누적 데이터로 재학습 가능.
+        # 사용자 피드백 (안전/위험) 수집용. DC-30: vote 값 'danger'로 통일.
+        # UNIQUE(device_uuid, registered_domain): 기기당 도메인 1회 투표 제한.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS url_votes (
-                id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                url_hash TEXT    NOT NULL,
-                url      TEXT    NOT NULL,
-                vote     TEXT    NOT NULL CHECK(vote IN ('safe', 'dangerous')),
-                voted_at TEXT    NOT NULL
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                url_hash          TEXT    NOT NULL,
+                url               TEXT    NOT NULL,
+                vote              TEXT    NOT NULL CHECK(vote IN ('safe', 'danger')),
+                voted_at          TEXT    NOT NULL,
+                session_id        TEXT,
+                device_uuid       TEXT    NOT NULL DEFAULT '',
+                domain            TEXT    NOT NULL DEFAULT '',
+                registered_domain TEXT
             )
         """)
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_votes_url_hash
             ON url_votes (url_hash)
         """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_session_id
+            ON url_votes (session_id)
+            WHERE session_id IS NOT NULL
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_device_domain
+            ON url_votes (device_uuid, registered_domain)
+            WHERE device_uuid != '' AND registered_domain IS NOT NULL
+        """)
 
         # ── 샌드박스 결과 테이블 ─────────────────────────────────────────
-        # 7-B Browserless/Playwright 자동 분석 결과 저장.
-        # findings: JSON 배열 문자열 (예: '["팝업 감지", "리다이렉트 2회"]')
+        # DC-33: session_id를 PK로 사용. url_hash UNIQUE 제거.
+        # mode: '7a'(직접탐방) / '7b'(AI자동탐지). visited_urls: CDP 내비게이션 JSON 배열.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sandbox_results (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                url_hash        TEXT    NOT NULL UNIQUE,
-                url             TEXT    NOT NULL,
-                findings        TEXT,
-                screenshot_path TEXT,
-                analyzed_at     TEXT    NOT NULL,
-                expires_at      TEXT    NOT NULL
+                session_id        TEXT    PRIMARY KEY,
+                url_hash          TEXT    NOT NULL,
+                url               TEXT    NOT NULL,
+                mode              TEXT    NOT NULL DEFAULT '7b' CHECK(mode IN ('7a','7b')),
+                domain            TEXT    NOT NULL DEFAULT '',
+                registered_domain TEXT,
+                visited_urls      TEXT,
+                findings          TEXT,
+                sandbox_score     INTEGER DEFAULT 0,
+                summary           TEXT,
+                screenshots       TEXT,
+                final_url         TEXT,
+                redirect_count    INTEGER DEFAULT 0,
+                error             TEXT,
+                analyzed_at       TEXT    NOT NULL,
+                expires_at        TEXT    NOT NULL
             )
         """)
         conn.execute("""
@@ -139,21 +165,28 @@ def init_db() -> None:
             ON sandbox_results (expires_at)
         """)
 
-        # ── sandbox_results: 7-B 자동탐지 신규 컬럼 마이그레이션 ────────
-        sr_cols = {r[1] for r in conn.execute("PRAGMA table_info(sandbox_results)").fetchall()}
-        sr_migrations = [
-            ("session_id",     "TEXT"),
-            ("sandbox_score",  "INTEGER DEFAULT 0"),
-            ("summary",        "TEXT"),
-            ("screenshots",    "TEXT"),
-            ("final_url",      "TEXT"),
-            ("redirect_count", "INTEGER DEFAULT 0"),
-            ("error",          "TEXT"),
-        ]
-        for col, definition in sr_migrations:
-            if col not in sr_cols:
-                conn.execute(f"ALTER TABLE sandbox_results ADD COLUMN {col} {definition}")
-                logger.info(f"[DB] sandbox_results.{col} 컬럼 추가 완료")
+        # ── 분석 이력 테이블 ─────────────────────────────────────────────
+        # DAT-06: /analyze 호출 결과를 BackgroundTasks로 비동기 저장.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_history (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                url_hash          TEXT    NOT NULL,
+                url               TEXT    NOT NULL,
+                registered_domain TEXT,
+                verdict           TEXT    NOT NULL CHECK(verdict IN ('danger','suspicious','safe')),
+                triggered_signals TEXT,
+                heuristic_score   INTEGER,
+                prior_vote_danger INTEGER DEFAULT 0,
+                prior_vote_safe   INTEGER DEFAULT 0,
+                response_time_ms  INTEGER,
+                device_uuid       TEXT,
+                analyzed_at       TEXT    NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_history_url_hash
+            ON analysis_history (url_hash)
+        """)
 
         # ── migration: 기존 테이블에 누락 컬럼 추가 ─────────────────────
         # 주의: registered_domain 인덱스는 컬럼 존재 확인 후 생성해야 한다.

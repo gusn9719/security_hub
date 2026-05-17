@@ -10,24 +10,30 @@
 #   4. 화이트리스트 매칭   (→ SAFE | SUSPICIOUS Open Redirect)
 #   5. 도메인 평판 캐시    (domain_reputation_cache, 7일 TTL)
 #   6. 도메인 평판 조회    (캐시 미스 시 WHOIS/SSL → 캐시 저장)
-#   7. 휴리스틱 스코어링   (13 시그널 + 도메인 평판 시그널, 가중합)
+#   7. 휴리스틱 스코어링   (13 시그널 + 투표 + sandbox 시그널, 가중합)
 #   8. 판정 설명 생성      (explanation_service → cards_to_text)
 #
 # 판정 기준 (DC-06: 화이트리스트 미스 = 기본 SUSPICIOUS):
 #   - 블랙리스트 히트              → DANGER
 #   - 화이트리스트 히트 (리다이렉트 없음) → SAFE  ← SAFE 가능한 유일한 경로
 #   - 화이트리스트 히트 + 리다이렉트  → SUSPICIOUS
-#   - 휴리스틱 score ≥ 60         → DANGER  (휴리스틱은 DANGER 상향만 가능)
-#   - 그 외 (score < 60)          → SUSPICIOUS  (알 수 없음 = 의심)
+#   - 휴리스틱 score ≥ 70         → DANGER  (휴리스틱은 DANGER 상향만 가능)
+#   - 그 외 (score < 70)          → SUSPICIOUS  (알 수 없음 = 의심)
 #
 # 변경 이력:
 #   - Sprint 5A: TEMP_WHITELIST 제거, gemini/url_expander/whitelist 모듈 분리
 #   - Sprint 5E: DC-25 — Gemini /analyze 완전 제거, explanation_service 대체.
 #                0단계 위험 스킴, 5~6단계 평판 캐시, 7단계 휴리스틱 추가.
+#   - Sprint 7 PROMPT-5: vote_counts 시그널 연결 (prior_danger_vote_high/low)
+#   - Sprint 7 PROMPT-6: sandbox_score 시그널 연결 (ANL-11)
+#   - Sprint 7 PROMPT-7: DAT-06 — analysis_history 비동기 INSERT (BackgroundTasks)
 # =============================================================================
 
 import asyncio
 import logging
+import time
+
+from fastapi import BackgroundTasks
 
 from schemas.analysis import AnalyzeRequest, AnalyzeResponse, RiskStatus
 from database.blacklist_service import extract_urls, check_blacklist
@@ -43,6 +49,9 @@ from services.explanation_service import (
 )
 from services.reputation_cache_service import get_cached_reputation, save_reputation
 from services.domain_reputation_service import analyze_domain_reputation
+from database.vote_service import get_vote_counts
+from services.sandbox_service import get_latest_sandbox_score
+from database.analysis_history_service import save_analysis_history
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +63,42 @@ class AnalysisService:
 
     DC-25: /analyze 파이프라인에서 Gemini 완전 제거.
     판정 설명은 explanation_service.py 가 담당한다.
+    DAT-06: 분석 이력을 BackgroundTasks로 비동기 저장한다.
     """
 
-    async def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
+    async def analyze(
+        self,
+        request: AnalyzeRequest,
+        background_tasks: BackgroundTasks | None = None,
+        device_uuid: str = "",
+    ) -> AnalyzeResponse:
+        start_ms = int(time.monotonic() * 1000)
         text = request.text
+
+        def _schedule_history(
+            url: str,
+            verdict: str,
+            registered: str | None = None,
+            triggered: dict | None = None,
+            score: int | None = None,
+            vote_danger: int = 0,
+            vote_safe: int = 0,
+        ) -> None:
+            if background_tasks is None:
+                return
+            elapsed = int(time.monotonic() * 1000) - start_ms
+            background_tasks.add_task(
+                save_analysis_history,
+                url=url,
+                verdict=verdict,
+                registered_domain=registered,
+                triggered_signals=triggered,
+                heuristic_score=score,
+                prior_vote_danger=vote_danger,
+                prior_vote_safe=vote_safe,
+                response_time_ms=elapsed,
+                device_uuid=device_uuid,
+            )
 
         # ── 0단계: URL 추출 ────────────────────────────────────────────────
         raw_urls = extract_urls(text)
@@ -83,6 +124,10 @@ class AnalysisService:
                 cards = build_explanation_cards(
                     {}, verdict="DANGER", extra_keys=["dangerous_scheme"]
                 )
+                _schedule_history(
+                    url=url, verdict="danger",
+                    registered=get_registered_domain(url),
+                )
                 return AnalyzeResponse(
                     status=RiskStatus.DANGER,
                     title="위험한 링크입니다",
@@ -98,6 +143,10 @@ class AnalysisService:
             expanded = expand_url(url) if is_short_url(url) else url
             expanded_urls.append(expanded)
 
+        # 대표 URL과 등록 도메인 — 이후 모든 단계에서 공유
+        primary_url = expanded_urls[0]
+        registered = get_registered_domain(primary_url)
+
         # ── 3단계: 블랙리스트 매칭 ────────────────────────────────────────
         try:
             hit = check_blacklist(expanded_urls)
@@ -109,6 +158,9 @@ class AnalysisService:
             category = hit.get("category")
             cards = build_blacklist_cards(category)
             logger.warning("[파이프라인] 블랙리스트 DANGER — category=%s", category)
+            _schedule_history(
+                url=primary_url, verdict="danger", registered=registered,
+            )
             return AnalyzeResponse(
                 status=RiskStatus.DANGER,
                 title="위험한 링크입니다",
@@ -118,8 +170,6 @@ class AnalysisService:
             )
 
         # ── 4단계: 화이트리스트 매칭 ──────────────────────────────────────
-        # 대표 URL = 첫 번째 확장 URL (다중 URL 입력 시에도 1건 기준)
-        primary_url = expanded_urls[0]
         wl = whitelist_service.is_whitelisted(primary_url)
 
         if wl.hit and not wl.open_redirect:
@@ -127,6 +177,9 @@ class AnalysisService:
             logger.info(
                 "[파이프라인] 화이트리스트 SAFE — mode=%s risk=%s",
                 wl.match_mode, wl.risk_level,
+            )
+            _schedule_history(
+                url=primary_url, verdict="safe", registered=registered,
             )
             return AnalyzeResponse(
                 status=RiskStatus.SAFE,
@@ -144,6 +197,9 @@ class AnalysisService:
             cards = build_explanation_cards(
                 {}, verdict="SUSPICIOUS", extra_keys=["open_redirect"]
             )
+            _schedule_history(
+                url=primary_url, verdict="suspicious", registered=registered,
+            )
             return AnalyzeResponse(
                 status=RiskStatus.SUSPICIOUS,
                 title="의심스러운 링크입니다",
@@ -153,7 +209,6 @@ class AnalysisService:
             )
 
         # ── 5단계: 도메인 평판 캐시 조회 ──────────────────────────────────
-        registered = get_registered_domain(primary_url)
         domain_evidence: dict | None = None
 
         if registered:
@@ -179,13 +234,41 @@ class AnalysisService:
                 logger.warning("[도메인평판] 조회 실패 (무시): %s", e)
                 domain_evidence = None
 
+        # ── 7단계 직전: 사용자 투표 이력 조회 ────────────────────────────
+        try:
+            vote_counts = get_vote_counts(primary_url)
+        except Exception as e:
+            logger.warning("[파이프라인] 투표 조회 실패 (무시): %s", e)
+            vote_counts = None
+
+        # ── 7단계 직전: 7-B 샌드박스 점수 조회 (ANL-11) ─────────────────
+        try:
+            prior_sandbox_score = await asyncio.to_thread(get_latest_sandbox_score, primary_url)
+        except Exception as e:
+            logger.warning("[파이프라인] sandbox_score 조회 실패 (무시): %s", e)
+            prior_sandbox_score = None
+
         # ── 7단계: 휴리스틱 스코어링 ──────────────────────────────────────
-        # 13 시그널 가중합. domain_evidence 는 선택적 — 없어도 동작.
-        heuristic = score_url(primary_url, domain_evidence=domain_evidence)
+        # 13 시그널 + 투표 + sandbox 시그널 가중합. 각 인수는 선택적.
+        heuristic = score_url(
+            primary_url,
+            domain_evidence=domain_evidence,
+            vote_counts=vote_counts,
+            sandbox_score=prior_sandbox_score,
+        )
+
+        # 공통 history 인수
+        vote_danger = (vote_counts or {}).get("danger", 0)
+        vote_safe   = (vote_counts or {}).get("safe", 0)
 
         # ── 8단계: 판정 및 설명 카드 생성 (DC-25: Gemini 미호출) ───────────
         if heuristic.verdict == "DANGER":
             cards = build_explanation_cards(heuristic.triggered, verdict="DANGER")
+            _schedule_history(
+                url=primary_url, verdict="danger", registered=registered,
+                triggered=heuristic.triggered, score=heuristic.score,
+                vote_danger=vote_danger, vote_safe=vote_safe,
+            )
             return AnalyzeResponse(
                 status=RiskStatus.DANGER,
                 title="위험한 링크입니다",
@@ -194,7 +277,7 @@ class AnalysisService:
                 cards=cards,
             )
 
-        # 휴리스틱 score < 60 — DC-06: 화이트리스트 미스 = 기본 SUSPICIOUS
+        # 휴리스틱 score < 70 — DC-06: 화이트리스트 미스 = 기본 SUSPICIOUS
         # 점수가 낮아도 "알 수 없음"이지 "안전"이 아니다.
         # SAFE 판정은 화이트리스트 히트(4단계)만 가능.
         logger.info(
@@ -202,6 +285,11 @@ class AnalysisService:
             heuristic.verdict, heuristic.score, registered,
         )
         cards = build_explanation_cards(heuristic.triggered, verdict="SUSPICIOUS")
+        _schedule_history(
+            url=primary_url, verdict="suspicious", registered=registered,
+            triggered=heuristic.triggered, score=heuristic.score,
+            vote_danger=vote_danger, vote_safe=vote_safe,
+        )
         return AnalyzeResponse(
             status=RiskStatus.SUSPICIOUS,
             title="의심스러운 링크입니다",

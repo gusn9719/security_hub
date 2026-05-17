@@ -30,11 +30,13 @@ except ImportError:
 # KISA 취약점 가이드 EP(인코딩 우회) / SI(서버정보) 항목 대응
 # javascript:, data:, vbscript: → 스크립트 직접 실행
 # file: → 로컬 파일 접근
+# blob: → ANL-00: Blob URL은 로컬 blob 객체를 가리키며 외부 탐지가 불가능하다
 DANGEROUS_SCHEMES: frozenset[str] = frozenset({
     "javascript",
     "data",
     "vbscript",
     "file",
+    "blob",
 })
 
 

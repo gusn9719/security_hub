@@ -1,14 +1,17 @@
 # =============================================================================
 # data/scripts/migrate_db.py
-# 역할: DB 마이그레이션 — registered_domain 컬럼 역채움(backfill)
+# 역할: DB 마이그레이션
 #
 # 실행 방법 (security_hub/ 루트에서):
 #   python data/scripts/migrate_db.py
 #
-# 수행 작업:
-#   1. init_db() 호출 → 신규 컬럼/테이블 없으면 자동 생성
-#   2. blacklist.registered_domain NULL 행 역채움
-#   3. whitelist.registered_domain NULL 행 역채움 (pattern 모드 제외)
+# 수행 작업 (v0513 DC-30/DC-33/DAT-06):
+#   1. sandbox_results DROP & RECREATE (DC-33: session_id PK, mode/domain 컬럼 추가)
+#   2. url_votes DROP & RECREATE (DC-30: vote 'danger', device_uuid/domain 컬럼 추가)
+#   3. init_db() 호출 → 신규 테이블/컬럼 생성 (analysis_history 포함)
+#   4. blacklist.registered_domain NULL 행 역채움
+#   5. whitelist.registered_domain NULL 행 역채움
+#   6. PRAGMA table_info 검증 출력
 # =============================================================================
 
 import sys
@@ -53,6 +56,50 @@ def _compute_registered_domain(domain: str) -> str | None:
     return None
 
 
+# =============================================================================
+# DC-33: sandbox_results DROP & RECREATE
+# =============================================================================
+
+def _migrate_sandbox_results(conn) -> None:
+    """
+    sandbox_results 테이블을 DC-33 스키마로 재생성한다.
+    운영 데이터 없음 — 무조건 DROP & RECREATE.
+    """
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sandbox_results'"
+    ).fetchall()}
+
+    if "sandbox_results" in tables:
+        conn.execute("DROP TABLE sandbox_results")
+        logger.info("[마이그레이션] sandbox_results 테이블 삭제 완료")
+    else:
+        logger.info("[마이그레이션] sandbox_results 테이블 없음 — 신규 생성")
+
+
+# =============================================================================
+# DC-30: url_votes DROP & RECREATE
+# =============================================================================
+
+def _migrate_url_votes(conn) -> None:
+    """
+    url_votes 테이블을 DC-30 스키마로 재생성한다.
+    vote CHECK 값 변경('dangerous' → 'danger')은 ALTER 불가 — DROP & RECREATE.
+    """
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='url_votes'"
+    ).fetchall()}
+
+    if "url_votes" in tables:
+        conn.execute("DROP TABLE url_votes")
+        logger.info("[마이그레이션] url_votes 테이블 삭제 완료")
+    else:
+        logger.info("[마이그레이션] url_votes 테이블 없음 — 신규 생성")
+
+
+# =============================================================================
+# 기존 마이그레이션: registered_domain 역채움
+# =============================================================================
+
 def _backfill_blacklist(conn) -> tuple[int, int]:
     """
     blacklist 테이블에서 registered_domain 이 NULL 인 행을 역채움한다.
@@ -80,7 +127,6 @@ def _backfill_blacklist(conn) -> tuple[int, int]:
             )
             updated += 1
         else:
-            # IP 주소, 빈 도메인 등은 NULL 유지
             skipped += 1
 
     logger.info(
@@ -92,7 +138,7 @@ def _backfill_blacklist(conn) -> tuple[int, int]:
 def _backfill_whitelist(conn) -> tuple[int, int]:
     """
     whitelist 테이블에서 registered_domain 이 NULL 인 행을 역채움한다.
-    match_mode='pattern' 항목('.go.kr' 형태)은 등록 도메인이 없으므로 건너뛴다.
+    match_mode='pattern' 항목('.go.kr' 형태)은 건너뛴다.
 
     반환값: (업데이트 성공 건수, 스킵 건수)
     """
@@ -130,28 +176,62 @@ def _backfill_whitelist(conn) -> tuple[int, int]:
     return updated, skipped
 
 
+# =============================================================================
+# 검증
+# =============================================================================
+
+def _verify_schema(conn) -> None:
+    """PRAGMA table_info로 변경된 테이블 컬럼을 출력해 검증한다."""
+    targets = ["sandbox_results", "url_votes", "analysis_history"]
+    logger.info("=" * 60)
+    logger.info("[검증] 테이블 스키마 확인")
+    for table in targets:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if not rows:
+            logger.warning("[검증] %s: 테이블 없음!", table)
+            continue
+        cols = [f"{r['name']} ({r['type']})" for r in rows]
+        logger.info("[검증] %s 컬럼(%d): %s", table, len(cols), ", ".join(cols))
+    logger.info("=" * 60)
+
+
+# =============================================================================
+# 메인
+# =============================================================================
+
 def run_migration() -> None:
     """전체 마이그레이션을 실행한다."""
     logger.info("=" * 60)
-    logger.info("[마이그레이션] 시작")
+    logger.info("[마이그레이션] 시작 (v0513 DC-30/DC-33/DAT-06)")
 
-    # 1. 신규 테이블/컬럼 생성
-    logger.info("[마이그레이션] 1단계: init_db() — 스키마 갱신")
+    # 1. sandbox_results / url_votes DROP (init_db가 새 스키마로 재생성)
+    logger.info("[마이그레이션] 1단계: sandbox_results / url_votes DROP")
+    with get_rw_connection() as conn:
+        _migrate_sandbox_results(conn)
+        _migrate_url_votes(conn)
+        conn.commit()
+
+    # 2. 신규 테이블/컬럼 생성 (analysis_history 포함)
+    logger.info("[마이그레이션] 2단계: init_db() — 스키마 갱신")
     init_db()
 
-    # 2. 역채움
+    # 3. 역채움
     with get_rw_connection() as conn:
-        logger.info("[마이그레이션] 2단계: blacklist.registered_domain 역채움")
+        logger.info("[마이그레이션] 3단계: blacklist.registered_domain 역채움")
         bl_upd, bl_skip = _backfill_blacklist(conn)
 
-        logger.info("[마이그레이션] 3단계: whitelist.registered_domain 역채움")
+        logger.info("[마이그레이션] 4단계: whitelist.registered_domain 역채움")
         wl_upd, wl_skip = _backfill_whitelist(conn)
 
         conn.commit()
 
+    # 4. 스키마 검증 출력
+    with get_rw_connection() as conn:
+        _verify_schema(conn)
+
     logger.info("=" * 60)
     logger.info(
-        f"[마이그레이션] 완료 — "
+        "[마이그레이션] 완료 — "
         f"blacklist 업데이트: {bl_upd} / 스킵: {bl_skip} | "
         f"whitelist 업데이트: {wl_upd} / 스킵: {wl_skip}"
     )

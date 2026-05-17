@@ -13,7 +13,11 @@
 
 import asyncio
 import logging
+import os
 import sys
+import time
+import uuid as _uuid_mod
+from collections import defaultdict
 from contextlib import asynccontextmanager
 
 # Windows의 ProactorEventLoop은 asyncio SSL 연결에서 실제 SSL 오류를
@@ -62,6 +66,37 @@ class BlockDangerousMethodsMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class DeviceUUIDMiddleware(BaseHTTPMiddleware):
+    """
+    NF-30: 모든 요청에 X-Device-UUID 헤더를 강제한다.
+
+    헤더 없음  → 401 Unauthorized
+    UUID 형식 오류 → 400 Bad Request
+    제외 경로: /docs, /redoc, /openapi.json, /sandbox/browse/.../novnc 포함 경로
+    """
+    _EXCLUDED = frozenset({"/docs", "/redoc", "/openapi.json"})
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path in self._EXCLUDED or "/novnc" in path:
+            return await call_next(request)
+
+        device_uuid = request.headers.get("X-Device-UUID")
+        if not device_uuid:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "X-Device-UUID 헤더가 필요합니다."},
+            )
+        try:
+            _uuid_mod.UUID(device_uuid)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "X-Device-UUID 형식이 올바르지 않습니다 (UUID v4 필요)."},
+            )
+        return await call_next(request)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
     모든 응답에 보안 헤더를 추가한다.
@@ -77,10 +112,77 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"]        = "1; mode=block"
         response.headers["Referrer-Policy"]          = "no-referrer"
+        response.headers["Cache-Control"]            = "no-store"   # NF-12
         if not request.url.path.startswith(self._NOVNC_PREFIX):
             response.headers["X-Frame-Options"]          = "DENY"
             response.headers["Content-Security-Policy"]  = "default-src 'none'"
         return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    NF-24: IP 기반 요청 속도 제한.
+    - POST /analyze          : 10회/분
+    - POST /sandbox/browse   : 5회/분 (컨테이너 생성)
+    - POST /sandbox/auto-test: 5회/분
+    - POST /sandbox/run      : 5회/분
+    초과 시 HTTP 429 + Retry-After 반환.
+    """
+    _LIMITS: dict[str, tuple[int, int]] = {
+        "/analyze":           (10, 60),
+        "/sandbox/browse":    (5,  60),
+        "/sandbox/auto-test": (5,  60),
+        "/sandbox/run":       (5,  60),
+    }
+
+    def __init__(self, app):
+        super().__init__(app)
+        # IP:endpoint → 요청 타임스탬프 리스트
+        self._counters: dict[str, list[float]] = defaultdict(list)
+
+    def _client_ip(self, request: Request) -> str:
+        # Cloudflare Tunnel은 CF-Connecting-IP 헤더로 실제 클라이언트 IP를 전달한다.
+        for header in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+            val = request.headers.get(header)
+            if val:
+                return val.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method != "POST":
+            return await call_next(request)
+
+        path = request.url.path
+        matched: tuple[int, int] | None = None
+        for prefix, limits in self._LIMITS.items():
+            if path == prefix or path == prefix + "/":
+                matched = limits
+                break
+
+        if matched is None:
+            return await call_next(request)
+
+        max_req, window = matched
+        ip = self._client_ip(request)
+        key = f"{ip}:{path}"
+        now = time.monotonic()
+
+        # 윈도우 밖 타임스탬프 제거
+        self._counters[key] = [t for t in self._counters[key] if now - t < window]
+
+        if len(self._counters[key]) >= max_req:
+            logger.warning(
+                "[RateLimit] %s %s 초과: IP=%s (%d/%d per %ds)",
+                request.method, path, ip, len(self._counters[key]), max_req, window,
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"detail": f"요청 한도를 초과했습니다. {window}초 후 다시 시도하세요."},
+                headers={"Retry-After": str(window)},
+            )
+
+        self._counters[key].append(now)
+        return await call_next(request)
 
 
 # =============================================================================
@@ -109,25 +211,39 @@ async def lifespan(app: FastAPI):
 # FastAPI 앱
 # =============================================================================
 
+# NF-25: 프로덕션에서 API 문서 비활성화
+_DISABLE_DOCS = os.environ.get("DISABLE_DOCS", "").lower() in ("1", "true", "yes")
+
 app = FastAPI(
     title="피싱 탐지 API",
     description="블랙리스트 DB + 휴리스틱 기반 피싱·스미싱 탐지 서비스",
     version="0.5.0",
     lifespan=lifespan,
+    docs_url=None if _DISABLE_DOCS else "/docs",
+    redoc_url=None if _DISABLE_DOCS else "/redoc",
+    openapi_url=None if _DISABLE_DOCS else "/openapi.json",
 )
 
-# ── 미들웨어 등록 순서: 바깥 → 안쪽 순으로 적용됨 ─────────────────────────
-# 1. 위험 메서드 차단 (가장 먼저 — TRACE 등은 내부 처리 전 거절)
+# ── 미들웨어 등록 순서 (Starlette: add_middleware는 맨 앞에 삽입 → 나중 등록이 바깥) ──
+# 실제 요청 처리 순서: CORS → Security → RateLimit → DeviceUUID → Block → handler
+#
+# 1. 위험 메서드 차단 (가장 안쪽 — handler 직전에 실행)
 app.add_middleware(BlockDangerousMethodsMiddleware)
 
-# 2. 보안 헤더 (모든 응답에 추가)
+# 2. NF-30: 기기 UUID 검증 (없으면 401, 잘못된 형식이면 400)
+app.add_middleware(DeviceUUIDMiddleware)
+
+# 3. NF-24: IP 기반 요청 속도 제한
+app.add_middleware(RateLimitMiddleware)
+
+# 4. 보안 헤더 (모든 응답에 추가)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 3. CORS (정상 요청에만 허용)
+# 5. CORS (OPTIONS preflight를 가장 먼저 처리 — 바깥)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],   # TRACE/CONNECT/TRACK 명시 제외
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],   # TRACE/CONNECT/TRACK 명시 제외
     allow_headers=["*"],
 )
 

@@ -19,16 +19,18 @@ from pydantic import BaseModel
 from services.sandbox_service import run_sandbox_auto, run_auto_test
 from services import browse_service
 from services.browse_service import create_browse_session, terminate_browse_session
-from schemas.analysis import SandboxAutoTestRequest, SandboxAutoTestResponse
-
-# KasmVNC HTTP Basic Auth 헤더 값 (base64)
-_KASM_AUTH_B64 = base64.b64encode(
-    f"{browse_service.VNC_USER}:{browse_service.VNC_PW}".encode()
-).decode()
+from schemas.analysis import SandboxAutoTestRequest, SandboxAutoTestResponse, VoteRequest, VoteResponse
+from database.vote_service import save_vote
+import config as _cfg
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
+
+# NF-28: 동시 세션 제한 — Semaphore로 최대 동시 실행 수 제어
+# 초과 요청은 대기 없이 즉시 503으로 거부한다 (_value 체크 후 HTTPException).
+_BROWSE_SEM = asyncio.Semaphore(4)   # 7-A 직접 탐방: 최대 4세션
+_AUTO_SEM   = asyncio.Semaphore(3)   # 7-B AI 자동테스트: 최대 3세션
 
 
 class SandboxRequest(BaseModel):
@@ -49,6 +51,7 @@ async def auto_test(request: SandboxAutoTestRequest) -> SandboxAutoTestResponse:
     URL을 격리 컨테이너에서 자동 분석하고 가짜 개인정보를 주입해 피싱 폼을 탐지한다.
 
     결과는 24시간 캐시된다. 컨테이너 기동 실패 시에도 score=0으로 정상 응답한다.
+    NF-28: 동시 3세션 초과 시 503 + Retry-After: 30 반환.
 
     Args:
         request: SandboxAutoTestRequest — 분석할 URL
@@ -56,8 +59,15 @@ async def auto_test(request: SandboxAutoTestRequest) -> SandboxAutoTestResponse:
     Returns:
         SandboxAutoTestResponse: 점수, 탐지 항목, 스크린샷 등 포함
     """
-    logger.info("[/sandbox/auto-test] 요청: %s", request.url)
-    result = await run_auto_test(request.url)
+    if _AUTO_SEM._value == 0:
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": "30"},
+            detail="현재 AI 자동 테스트 세션이 최대치(3)에 도달했습니다. 잠시 후 다시 시도해주세요.",
+        )
+    async with _AUTO_SEM:
+        logger.info("[/sandbox/auto-test] 요청: %s (슬롯 잔여: %d)", request.url, _AUTO_SEM._value)
+        result = await run_auto_test(request.url)
     logger.info(
         "[/sandbox/auto-test] 완료. score=%d, findings=%d건, cached=%s",
         result.get("sandbox_score", 0),
@@ -65,6 +75,31 @@ async def auto_test(request: SandboxAutoTestRequest) -> SandboxAutoTestResponse:
         result.get("cached", False),
     )
     return SandboxAutoTestResponse(**result)
+
+
+@router.post("/votes", response_model=VoteResponse)
+async def submit_vote(http_request: Request, request: VoteRequest) -> VoteResponse:
+    """
+    7-A 직접 탐방 세션 종료 후 사용자 위험도 투표를 저장한다.
+
+    session_id(container_id)당 1회만 저장되며 중복 투표는 조용히 무시된다.
+
+    Args:
+        http_request: FastAPI Request — X-Device-UUID 헤더 추출용
+        request:      VoteRequest — url, session_id, vote("safe"|"danger")
+
+    Returns:
+        VoteResponse: success 여부와 메시지
+    """
+    device_uuid = http_request.headers.get("X-Device-UUID", request.device_uuid)
+    logger.info("[/sandbox/votes] 요청: url=%s vote=%s uuid=%s", request.url, request.vote, device_uuid[:8])
+    saved = await asyncio.to_thread(
+        save_vote, request.url, request.session_id, request.vote, device_uuid
+    )
+    if saved:
+        logger.info("[/sandbox/votes] 저장 완료: session_id=%s", request.session_id)
+        return VoteResponse(success=True, message="투표가 저장되었습니다.")
+    return VoteResponse(success=False, message="이미 투표하셨거나 저장에 실패했습니다.")
 
 
 @router.post("/run")
@@ -115,39 +150,70 @@ async def browse_create(http_request: Request, request: BrowseCreateRequest) -> 
             detail="Docker를 사용할 수 없습니다. Docker Desktop이 실행 중인지 확인하세요.",
         )
 
+    # NF-28: 동시 4세션 초과 시 즉시 503
+    if _BROWSE_SEM._value == 0:
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": "30"},
+            detail="현재 직접 탐방 세션이 최대치(4)에 도달했습니다. 잠시 후 다시 시도해주세요.",
+        )
+
     logger.info(
-        "[/sandbox/browse POST] 요청: %s (해상도: %dx%d)",
-        request.url, request.screen_width, request.screen_height,
+        "[/sandbox/browse POST] 요청: %s (해상도: %dx%d, 슬롯 잔여: %d)",
+        request.url, request.screen_width, request.screen_height, _BROWSE_SEM._value,
     )
-    result = await create_browse_session(
-        request.url, request.screen_width, request.screen_height,
-    )
+    async with _BROWSE_SEM:
+        result = await create_browse_session(
+            request.url, request.screen_width, request.screen_height,
+        )
 
     if "error" in result:
         logger.error("[/sandbox/browse POST] 생성 실패: %s", result["error"])
         raise HTTPException(status_code=503, detail=result["error"])
 
     container_id = result["container_id"]
+    # DC-27: per-session 비밀번호 (세션 생성 시 browse_service가 생성·저장)
+    vnc_pw = browse_service._active_sessions[container_id]["vnc_pw"]
 
-    # noVNC URL을 랜덤 외부 포트 대신 FastAPI 백엔드 경로로 조립한다.
-    # Flutter → http://SERVER:8000/sandbox/browse/{id}/novnc/ → 내부 SSL-strip 프록시 → kasmVNC
-    # 이렇게 하면 방화벽에 포트 8000 하나만 열면 되고, 랜덤 포트 노출이 없다.
+    # ── Cloudflare Tunnel / 리버스 프록시 대응 스킴·포트 감지 ─────────────────
+    # 우선순위: 환경변수 BASE_URL > X-Forwarded-Proto 헤더 > FORCE_HTTPS 플래그 > 로컬 추론
     host_header = http_request.headers.get("host", "localhost:8000")
-    server_host = host_header.split(":")[0]
-    server_port = host_header.split(":")[1] if ":" in host_header else "8000"
-    novnc_base = f"http://{host_header}/sandbox/browse/{container_id}/novnc"
+    forwarded_proto = http_request.headers.get("x-forwarded-proto", "")
+
+    if _cfg.BASE_URL:
+        # 환경변수로 외부 URL이 명시된 경우 (가장 신뢰할 수 있음)
+        base_origin = _cfg.BASE_URL.rstrip("/")
+        scheme = "https" if base_origin.startswith("https://") else "http"
+        # host_header는 noVNC &host= 파라미터에 사용 — BASE_URL에서 추출
+        host_header = base_origin.split("://", 1)[1].split("/")[0]
+    elif forwarded_proto == "https" or _cfg.FORCE_HTTPS:
+        # Cloudflare Tunnel: CF가 X-Forwarded-Proto: https 를 주입한다
+        scheme = "https"
+        base_origin = f"https://{host_header}"
+    else:
+        scheme = "http"
+        base_origin = f"http://{host_header}"
+
+    # 호스트:포트 안전 분리 (Cloudflare 도메인에는 포트가 없다)
+    if ":" in host_header:
+        server_host = host_header.split(":")[0]
+        server_port = host_header.split(":")[1]
+    else:
+        server_host = host_header
+        server_port = "443" if scheme == "https" else "80"
+
+    # noVNC URL을 FastAPI 백엔드 경로로 조립한다.
+    # Flutter → https://CF_DOMAIN/sandbox/browse/{id}/novnc/ → KasmVNC WS 프록시
+    novnc_base = f"{base_origin}/sandbox/browse/{container_id}/novnc"
 
     # path= 에 WebSocket 경로를 직접 지정한다.
-    # JS 재작성 스크립트에만 의존하면 CSP·타이밍 문제로 WS가 FastAPI에 도달 못 할 수 있다.
-    # noVNC는 ws://host:port/<path> 로 직접 연결 → 재작성 불필요.
-    # WS 재작성 스크립트는 /sandbox/browse/ 를 이미 포함한 URL을 스킵하도록 수정됐으므로
-    # 이중경로 버그가 발생하지 않는다.
     novnc_ws_path = quote(f"sandbox/browse/{container_id}/novnc", safe="")
+    encrypt = "1" if scheme == "https" else "0"
     novnc_url = (
         f"{novnc_base}/"
-        f"?password={browse_service.VNC_PW}&username={browse_service.VNC_USER}&autoconnect=1&reconnect=1"
+        f"?password={vnc_pw}&username={browse_service.VNC_USER}&autoconnect=1&reconnect=1"
         f"&resize=remote&quality=6&compression=2"
-        f"&host={server_host}&port={server_port}&encrypt=0"
+        f"&host={server_host}&port={server_port}&encrypt={encrypt}"
         f"&path={novnc_ws_path}"
     )
 
@@ -355,6 +421,10 @@ async def _novnc_ws_proxy(
         return
 
     kasm_host_port: int = session["kasm_host_port"]
+    # DC-27: per-session 인증 헤더 계산
+    kasm_auth_b64 = base64.b64encode(
+        f"{browse_service.VNC_USER}:{session['vnc_pw']}".encode()
+    ).decode()
 
     proto_header = websocket.headers.get("sec-websocket-protocol", "")
     client_protocols = [p.strip() for p in proto_header.split(",") if p.strip()]
@@ -370,12 +440,12 @@ async def _novnc_ws_proxy(
             f"wss://127.0.0.1:{kasm_host_port}/",
             ssl=browse_service._PROXY_SSL_CTX,
             additional_headers={
-                "Authorization": f"Basic {_KASM_AUTH_B64}",
+                "Authorization": f"Basic {kasm_auth_b64}",
                 "Origin": f"https://127.0.0.1:{kasm_host_port}",
             },
             subprotocols=client_protocols or None,
             open_timeout=15,
-            ping_interval=None,
+            ping_interval=30,   # Cloudflare Tunnel: 100초 WS 타임아웃 방어 (30초 핑)
             max_size=10 * 1024 * 1024,
         ) as proxy_ws:
             # kasmVNC 가 선택한 서브프로토콜로 클라이언트를 수락한다.

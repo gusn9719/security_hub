@@ -102,14 +102,76 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
-def _check_sandbox_cache(url_hash: str) -> dict | None:
-    """24시간 이내의 유효한 sandbox_results 캐시를 반환한다. 없으면 None."""
+def _wait_for_browserless_ready(host: str, port: int, token: str, timeout: float = 20.0) -> bool:
+    """
+    Browserless HTTP 엔드포인트가 실제로 응답할 때까지 대기한다.
+
+    TCP 포트가 열린 직후에도 Browserless 내부 WebSocket 서버가 초기화되기까지
+    수 초가 걸릴 수 있다. _wait_for_port 이후에 이 함수를 호출해
+    'socket hang up' 오류를 방지한다.
+    4xx 포함 HTTP 응답이 오면 WS 서버도 준비된 것으로 판단한다.
+    """
+    import urllib.request
+    import urllib.error
+
+    deadline = time.monotonic() + timeout
+    url = f"http://{host}:{port}/?token={token}"
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status < 500:
+                    return True
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def get_latest_sandbox_score(url: str) -> int | None:
+    """
+    ANL-11: 이전 7-B 자동탐지 결과의 sandbox_score를 반환한다.
+
+    url_hash로 sandbox_results에서 mode='7b' 행을 조회한다.
+    만료 여부와 무관하게 가장 최근 점수를 반환한다 (이력 시그널 용도).
+    레코드가 없거나 오류 시 None을 반환한다.
+
+    Args:
+        url: 조회 대상 URL
+
+    Returns:
+        sandbox_score (0~100) 또는 None
+    """
+    url_hash = hashlib.sha256(url.encode()).hexdigest()
     try:
-        from database.db_init import get_rw_connection
-        now = datetime.datetime.utcnow().isoformat()
-        with get_rw_connection() as conn:
+        from database.db_init import get_ro_connection
+        with get_ro_connection() as conn:
             row = conn.execute(
-                "SELECT * FROM sandbox_results WHERE url_hash = ? AND expires_at > ?",
+                """
+                SELECT sandbox_score FROM sandbox_results
+                WHERE url_hash = ? AND mode = '7b'
+                ORDER BY analyzed_at DESC
+                LIMIT 1
+                """,
+                (url_hash,),
+            ).fetchone()
+            if row is not None:
+                return row["sandbox_score"] or 0
+    except Exception as e:
+        logger.warning("[샌드박스] sandbox_score 조회 실패: %s", e)
+    return None
+
+
+def _check_sandbox_cache(url_hash: str) -> dict | None:
+    """24시간 이내의 유효한 7b sandbox_results 캐시를 반환한다. 없으면 None."""
+    try:
+        from database.db_init import get_ro_connection
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
+        with get_ro_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM sandbox_results WHERE url_hash = ? AND mode = '7b' AND expires_at > ? AND error IS NULL",
                 (url_hash, now),
             ).fetchone()
             if row:
@@ -145,19 +207,24 @@ def _save_sandbox_result(
     """sandbox_results 테이블에 분석 결과를 저장한다 (TTL 24h)."""
     try:
         from database.db_init import get_rw_connection
-        now = datetime.datetime.utcnow()
+        from services.url_validator import get_registered_domain
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         expires = now + datetime.timedelta(hours=24)
+        domain = urlparse(url).hostname or ""
+        registered_domain = get_registered_domain(url)
         with get_rw_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO sandbox_results
-                    (url_hash, url, session_id, sandbox_score, findings, summary,
+                    (url_hash, url, session_id, mode, domain, registered_domain,
+                     sandbox_score, findings, summary,
                      screenshots, final_url, redirect_count, error,
                      analyzed_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, '7b', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    url_hash, url, session_id, sandbox_score,
+                    url_hash, url, session_id, domain, registered_domain,
+                    sandbox_score,
                     json.dumps(findings, ensure_ascii=False),
                     summary,
                     json.dumps(screenshots, ensure_ascii=False),
@@ -331,12 +398,20 @@ async def _auto_test_playwright_analysis(url: str, ws_url: str) -> dict:
 
                 auto_download_flag: list[bool] = [False]
 
+                page = await context.new_page()
+
+                # download 이벤트는 Page에서 발생한다 (BrowserContext가 아님).
                 def _on_download(_):
                     auto_download_flag[0] = True
 
-                context.on("download", _on_download)
+                page.on("download", _on_download)
 
-                page = await context.new_page()
+                # Playwright 레벨 내부 IP 차단 (Docker 네트워크 수준 차단 외 이중 방어)
+                async def _block_ssrf(route):
+                    await route.abort()
+
+                for _ssrf_pattern, _ in _INTERNAL_IP_RULES:
+                    await page.route(_ssrf_pattern, _block_ssrf)
 
                 redirect_counter: list[int] = [0]
 
@@ -844,6 +919,12 @@ async def run_auto_test(url: str) -> dict:
             "cached": False,
         }
 
+    # URL 스킴 검증을 패키지 가용성 체크보다 먼저 수행한다.
+    # invalid 스킴은 패키지 설치 여부와 무관하게 거부해야 한다.
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return _err(f"지원하지 않는 URL 스킴: '{parsed.scheme}' (http/https만 허용)")
+
     if not _PLAYWRIGHT_AVAILABLE:
         return _err(
             "playwright 패키지 미설치 — "
@@ -851,10 +932,6 @@ async def run_auto_test(url: str) -> dict:
         )
     if not _DOCKER_AVAILABLE:
         return _err("docker 패키지 미설치 — 'pip install docker'")
-
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return _err(f"지원하지 않는 URL 스킴: '{parsed.scheme}' (http/https만 허용)")
 
     try:
         client = await asyncio.to_thread(docker.from_env)
@@ -897,7 +974,18 @@ async def run_auto_test(url: str) -> dict:
         if not ready:
             raise RuntimeError(f"컨테이너 포트 {host_port} 응답 없음 (10초 초과)")
 
-        ws_url = f"ws://localhost:{host_port}/chromium/playwright?token=sandbox_token"
+        # HTTP 엔드포인트 준비 확인 (최대 20초)
+        # TCP 포트 오픈 후에도 Browserless WebSocket 서버가 초기화되기까지
+        # 수 초가 필요하다. 이 단계를 건너뛰면 'socket hang up' 오류가 발생한다.
+        ws_ready = await asyncio.to_thread(
+            _wait_for_browserless_ready, "127.0.0.1", int(host_port), "sandbox_token", 20.0
+        )
+        if not ws_ready:
+            raise RuntimeError(f"Browserless HTTP 서버 {host_port} 초기화 실패 (20초 초과)")
+
+        # 127.0.0.1 명시: 포트가 IPv4 전용으로 바인딩돼 있으므로 localhost가
+        # IPv6(::1)로 해석되면 연결이 실패할 수 있다.
+        ws_url = f"ws://127.0.0.1:{host_port}/chromium/playwright?token=sandbox_token"
         logger.info("[자동탐지] Playwright 연결: %s", ws_url)
 
         # 3~9. Playwright 분석 (ProactorEventLoop 전용 스레드에서 실행)

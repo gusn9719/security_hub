@@ -3,6 +3,23 @@
 # 역할: 분석 파이프라인 전역 상수 관리
 # =============================================================================
 
+import os
+
+# ── 서버 환경 설정 ─────────────────────────────────────────────────────────────
+
+# Cloudflare Tunnel / 프로덕션 외부 URL.
+# 예: BASE_URL=https://your-tunnel.trycloudflare.com
+# 미설정 시 요청의 Host 헤더에서 자동 추론한다.
+BASE_URL: str | None = os.environ.get("BASE_URL")
+
+# 리버스 프록시 뒤에서 HTTPS를 강제한다.
+# Cloudflare Tunnel 사용 시 X-Forwarded-Proto 헤더로 자동 감지하지만,
+# 헤더가 없는 환경에서는 이 플래그로 강제 설정한다.
+FORCE_HTTPS: bool = os.environ.get("FORCE_HTTPS", "").lower() in ("1", "true", "yes")
+
+# 프로덕션 환경에서 /docs, /redoc, /openapi.json 을 비활성화한다 (NF-25).
+DISABLE_DOCS: bool = os.environ.get("DISABLE_DOCS", "").lower() in ("1", "true", "yes")
+
 # ── ANL-05: 도메인 평판 분석 상수 ─────────────────────────────────────────────
 
 # WHOIS/SSL 조회를 건너뛸 TLD 목록.

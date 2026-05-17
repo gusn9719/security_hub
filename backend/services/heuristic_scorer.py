@@ -8,7 +8,7 @@
 #   - KISA 웹 취약점 가이드 EP·IL·SF·FD·WM·SI 항목 매핑 반영.
 #
 # 임계값:
-#   DANGER_THRESHOLD     = 60  → RiskStatus.DANGER
+#   DANGER_THRESHOLD     = 70  → RiskStatus.DANGER
 #   SUSPICIOUS_THRESHOLD = 30  → RiskStatus.SUSPICIOUS
 #   미만                       → RiskStatus.SAFE (추가 확인 불요)
 # =============================================================================
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # 임계값
 # =============================================================================
 
-DANGER_THRESHOLD:     int = 60
+DANGER_THRESHOLD:     int = 70
 SUSPICIOUS_THRESHOLD: int = 30
 
 
@@ -75,6 +75,13 @@ _WEIGHTS: dict[str, int] = {
     "new_domain":             20,   # 등록 30일 이내
     "fresh_infrastructure":   15,   # 도메인 + SSL 모두 최신 (단기 피싱 인프라)
     "whois_no_record":        20,   # WHOIS 레코드 없음 (익명 등록)
+
+    # 사용자 투표 시그널 (vote_counts 에서 전달됨)
+    "prior_danger_vote_high": 35,   # danger≥10 & danger>safe
+    "prior_danger_vote_low":  20,   # danger≥3  & danger>safe
+
+    # 7-B 샌드박스 점수 시그널 (ANL-11)
+    "sandbox_danger_score":   30,   # 7-B sandbox_score ≥ 70
 }
 
 
@@ -276,15 +283,22 @@ def _signal_port_in_url(netloc: str) -> bool:
 # 공개 인터페이스
 # =============================================================================
 
-def score_url(url: str, domain_evidence: dict | None = None) -> HeuristicResult:
+def score_url(
+    url: str,
+    domain_evidence: dict | None = None,
+    vote_counts: dict | None = None,
+    sandbox_score: int | None = None,
+) -> HeuristicResult:
     """
     URL 에 대해 다중 시그널 가중합 휴리스틱 점수를 계산한다.
 
     판정을 직접 내리지 않고 점수와 발화 시그널을 반환한다.
     판정(DANGER/SUSPICIOUS/SAFE)은 임계값 비교로 결정한다.
 
-    [url]           : 분석 대상 URL (정규화 완료된 것을 권장)
+    [url]            : 분석 대상 URL (정규화 완료된 것을 권장)
     [domain_evidence]: analyze_domain_reputation() 반환값 (선택적)
+    [vote_counts]    : get_vote_counts() 반환값 {"danger": int, "safe": int} (선택적)
+    [sandbox_score]  : 7-B 자동탐지 sandbox_score (선택적, ANL-11)
     반환값: HeuristicResult
     """
     triggered: dict[str, int] = {}
@@ -343,6 +357,20 @@ def score_url(url: str, domain_evidence: dict | None = None) -> HeuristicResult:
             triggered["fresh_infrastructure"] = _WEIGHTS["fresh_infrastructure"]
         if domain_evidence.get("whois_no_record"):
             triggered["whois_no_record"] = _WEIGHTS["whois_no_record"]
+
+    # ── 사용자 투표 시그널 (선택적) ───────────────────────────────────────────
+    if vote_counts:
+        danger_count = vote_counts.get("danger", 0)
+        safe_count   = vote_counts.get("safe", 0)
+        if danger_count > safe_count:
+            if danger_count >= 10:
+                triggered["prior_danger_vote_high"] = _WEIGHTS["prior_danger_vote_high"]
+            elif danger_count >= 3:
+                triggered["prior_danger_vote_low"] = _WEIGHTS["prior_danger_vote_low"]
+
+    # ── 7-B 샌드박스 점수 시그널 (선택적, ANL-11) ────────────────────────────
+    if sandbox_score is not None and sandbox_score >= 70:
+        triggered["sandbox_danger_score"] = _WEIGHTS["sandbox_danger_score"]
 
     # ── 점수 합산 및 판정 ─────────────────────────────────────────────────────
     score = sum(triggered.values())

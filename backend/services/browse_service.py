@@ -29,9 +29,10 @@ BROWSE_PORT = "6901/tcp"
 PORT_READY_TIMEOUT = 120
 PORT_POLL_INTERVAL = 1
 VNC_USER = "kasm_user"
-VNC_PW = "sandbox"
+# VNC_PW는 세션별 uuid4().hex 로 생성된다 (DC-27).
+# 이 파일에 고정값을 두지 않는다.
 
-# 활성 세션: container_id → {container, network, timeout_task, proxy_task}
+# 활성 세션: container_id → {container, network, timeout_task, proxy_task, vnc_pw}
 _active_sessions: dict[str, dict] = {}
 
 # SSL-strip 프록시용 컨텍스트 — 자체서명 인증서를 무조건 수락
@@ -43,13 +44,6 @@ try:
     _PROXY_SSL_CTX.set_ciphers("DEFAULT@SECLEVEL=1")
 except ssl.SSLError:
     pass
-
-# kasmweb HTTP Basic Auth 헤더 (kasm_user:VNC_PW, base64 인코딩)
-_KASM_AUTH_HEADER = (
-    b"Authorization: Basic "
-    + base64.b64encode(f"{VNC_USER}:{VNC_PW}".encode())
-    + b"\r\n"
-)
 
 try:
     import docker
@@ -158,9 +152,9 @@ async def _wait_for_host_port(host_port: int, timeout: int = 30) -> bool:
     평문 TCP로 테스트하면 KasmVNC가 비SSL 연결을 받고 RST로 응답해 이후 SSL 연결을
     ConnectionRefusedError로 만드는 부작용이 있으므로 반드시 SSL로 연결해야 한다.
     """
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     attempt = 0
-    while asyncio.get_event_loop().time() < deadline:
+    while asyncio.get_running_loop().time() < deadline:
         attempt += 1
         writer: asyncio.StreamWriter | None = None
         try:
@@ -223,10 +217,12 @@ async def _proxy_handle(
     writer: asyncio.StreamWriter,
     target_host: str,
     target_port: int,
+    auth_header: bytes,
 ) -> None:
     """
     HTTP 요청 헤더를 읽어 Authorization을 주입한 뒤 kasmweb으로 전달하고
     이후 양방향 TCP 릴레이로 전환한다 (WebSocket upgrade도 동일하게 처리).
+    auth_header: b"Authorization: Basic <base64>" 형식의 per-session 인증 헤더
     """
     # HTTP 헤더 끝(CRLFCRLF)까지 수집
     buf = b""
@@ -261,9 +257,9 @@ async def _proxy_handle(
     req_line = headers_raw.split(b"\r\n")[0].decode(errors="replace")
     logger.info("[proxy] %s | ws=%s", req_line[:100], is_websocket)
 
-    # Authorization 주입 (중복 방지)
+    # Authorization 주입 (중복 방지) — per-session auth_header 사용
     if b"authorization:" not in headers_lower:
-        headers_raw += b"\r\n" + _KASM_AUTH_HEADER.rstrip(b"\r\n")
+        headers_raw += b"\r\n" + auth_header.rstrip(b"\r\n")
 
     if not is_websocket:
         # 일반 HTTP 요청 헤더 정규화:
@@ -452,11 +448,17 @@ async def _run_proxy_server(
         logger.info("[proxy] 프록시 종료: 127.0.0.1:%d → 127.0.0.1:%d", proxy_port, target_port)
 
 
-async def _start_ssl_strip_proxy(target_port: int) -> tuple[int, asyncio.Task]:
+async def _start_ssl_strip_proxy(target_port: int, vnc_pw: str) -> tuple[int, asyncio.Task]:
     proxy_port = _find_free_port()
+    # per-session 인증 헤더 — DC-27
+    session_auth_header = (
+        b"Authorization: Basic "
+        + base64.b64encode(f"{VNC_USER}:{vnc_pw}".encode())
+        + b"\r\n"
+    )
 
     async def _handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
-        await _proxy_handle(r, w, "127.0.0.1", target_port)
+        await _proxy_handle(r, w, "127.0.0.1", target_port, session_auth_header)
 
     # 외부에서 직접 접근 불가: 127.0.0.1 전용 바인딩.
     # Flutter는 FastAPI /sandbox/browse/{id}/novnc 를 통해 간접 접속한다.
@@ -478,6 +480,7 @@ async def _wait_for_http_ready(
     host_port: str,
     container=None,
     timeout: int = PORT_READY_TIMEOUT,
+    vnc_pw: str = "",
 ) -> bool:
     """
     컨테이너 내부 curl로 KasmVNC 응답을 확인한다.
@@ -487,10 +490,10 @@ async def _wait_for_http_ready(
         logger.warning("[browse] 컨테이너 없음 — 헬스체크 스킵")
         return False
 
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     attempt = 0
 
-    while asyncio.get_event_loop().time() < deadline:
+    while asyncio.get_running_loop().time() < deadline:
         attempt += 1
 
         if attempt == 1:
@@ -525,15 +528,15 @@ async def _wait_for_http_ready(
                         scheme, port, code.decode(errors="replace"), attempt,
                     )
 
-                    # 인증 자격증명 진단 — kasm_user:VNC_PW 로 200이 오는지 확인
-                    if code == b"401":
+                    # 인증 자격증명 진단 — kasm_user:vnc_pw 로 200이 오는지 확인
+                    if code == b"401" and vnc_pw:
                         for uname in (VNC_USER, "user", ""):
                             try:
                                 auth_result = await asyncio.to_thread(
                                     container.exec_run,
                                     [
                                         "curl", "-s", "-k",
-                                        "-u", f"{uname}:{VNC_PW}",
+                                        "-u", f"{uname}:{vnc_pw}",
                                         "-o", "/dev/null",
                                         "-w", "%{http_code}",
                                         f"{scheme}://localhost:{port}/",
@@ -542,8 +545,8 @@ async def _wait_for_http_ready(
                                 )
                                 auth_code = (auth_result.output or b"").strip()
                                 logger.info(
-                                    "[browse-auth-diag] curl -u '%s:%s' → HTTP %s",
-                                    uname, VNC_PW,
+                                    "[browse-auth-diag] curl -u '%s:***' → HTTP %s",
+                                    uname,
                                     auth_code.decode(errors="replace"),
                                 )
                                 if auth_code == b"200":
@@ -617,6 +620,9 @@ async def create_browse_session(
     except Exception as e:
         return {"error": f"Docker 연결 실패 (Docker Desktop이 실행 중인지 확인): {e}"}
 
+    # DC-27: 세션별 랜덤 VNC 비밀번호 생성
+    vnc_pw = uuid4().hex
+
     try:
         network = await asyncio.to_thread(_create_browse_network, client)
 
@@ -629,7 +635,7 @@ async def create_browse_session(
             remove=True,
             ports={BROWSE_PORT: None},
             environment={
-                "VNC_PW": VNC_PW,
+                "VNC_PW": vnc_pw,  # DC-27: per-session
                 "LAUNCH_URL": url,
                 "RESOLUTION": resolution,
                 # --kiosk: 탭·주소창·메뉴 등 브라우저 UI 완전 제거.
@@ -650,7 +656,7 @@ async def create_browse_session(
         if not host_port:
             raise RuntimeError("컨테이너 포트 매핑을 읽을 수 없습니다.")
 
-        ready = await _wait_for_http_ready(host_port, container=container)
+        ready = await _wait_for_http_ready(host_port, container=container, vnc_pw=vnc_pw)
         if not ready:
             raise RuntimeError(
                 f"kasmweb 포트 {host_port}가 {PORT_READY_TIMEOUT}초 내에 응답하지 않았습니다."
@@ -710,7 +716,7 @@ async def create_browse_session(
             logger.debug("[browse] kiosk 재시작 실패 (무시): %s", kiosk_e)
 
         kasm_host_port = int(host_port)
-        proxy_port, proxy_task = await _start_ssl_strip_proxy(kasm_host_port)
+        proxy_port, proxy_task = await _start_ssl_strip_proxy(kasm_host_port, vnc_pw)
 
         container_id = container.id
         timeout_task = asyncio.create_task(_auto_terminate(container_id, network.name))
@@ -722,6 +728,8 @@ async def create_browse_session(
             "proxy_port": proxy_port,
             # WebSocket 직접 연결용: Docker 포트 바인딩 호스트 포트
             "kasm_host_port": kasm_host_port,
+            # DC-27: per-session VNC 비밀번호 (sandbox.py에서 novnc_url 구성에 사용)
+            "vnc_pw": vnc_pw,
         }
 
         logger.info(
