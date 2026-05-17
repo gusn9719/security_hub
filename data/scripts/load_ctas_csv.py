@@ -1,11 +1,12 @@
 # =============================================================================
-# backend/scripts/load_ctas_csv.py
+# data/scripts/load_ctas_csv.py
 # 역할: C-TAS CSV 파일을 파싱하여 blacklist DB에 적재한다.
-# 실행 방법:
-#   cd backend
-#   python scripts/load_ctas_csv.py --dir data/
+# 실행 방법 (security_hub/ 루트에서):
+#   python data/scripts/load_ctas_csv.py --dir data/blacklist/
 # 변경 이력:
 #   - Sprint 4: 최초 작성
+#   - Sprint 5A: extract_urls 정규식 강화
+#   - Sprint 5E: registered_domain 컬럼 추가, sys.path 경로 수정
 # =============================================================================
 
 import sys
@@ -14,11 +15,12 @@ import logging
 import argparse
 from pathlib import Path
 
-# backend/ 폴더를 sys.path에 추가 — 모듈 임포트를 위해 필요
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# backend/ 폴더를 sys.path 에 추가 — database.* 임포트를 위해 필요
+_BACKEND = Path(__file__).resolve().parents[2] / "backend"
+sys.path.insert(0, str(_BACKEND))
 
-from database.db_init import get_rw_connection, init_db
-from database.blacklist_service import (
+from database.db_init import get_rw_connection, init_db  # noqa: E402
+from database.blacklist_service import (                  # noqa: E402
     normalize_url,
     extract_domain,
     compute_url_hash,
@@ -29,6 +31,25 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# tldextract — registered_domain 계산용
+try:
+    import tldextract as _tldextract
+    _TLDEXTRACT_AVAILABLE = True
+except ImportError:
+    _TLDEXTRACT_AVAILABLE = False
+    logger.warning("[로더] tldextract 미설치 — registered_domain 을 None 으로 저장")
+
+
+def _compute_registered_domain(domain: str) -> str | None:
+    """도메인에서 등록 도메인(registered_domain)을 추출한다."""
+    if not _TLDEXTRACT_AVAILABLE or not domain:
+        return None
+    extracted = _tldextract.extract(domain)
+    if extracted.domain and extracted.suffix:
+        return f"{extracted.domain}.{extracted.suffix}"
+    return None
+
 
 # C-TAS smType → 카테고리 매핑 테이블
 SMTYPE_MAP: dict[str, str] = {
@@ -56,19 +77,21 @@ def parse_ctas_row(row: dict) -> dict | None:
         return None  # 방어적 프로그래밍: 도메인 추출 실패 시 스킵
 
     url_hash = compute_url_hash(normalized)
+    registered_domain = _compute_registered_domain(domain)
 
     # smType → category 매핑 (알 수 없는 값은 "기타"로 처리)
     sm_type = row.get("smType", "").strip()
     category = SMTYPE_MAP.get(sm_type, "기타" if sm_type else None)
 
     return {
-        "url_hash": url_hash,
-        "url": normalized,
-        "domain": domain,
-        "source": "c-tas",
-        "reported_at": row.get("datetime", "").strip(),
-        "category": category,
-        "raw_message": row.get("smsMsg", "").strip() or None,
+        "url_hash":          url_hash,
+        "url":               normalized,
+        "domain":            domain,
+        "registered_domain": registered_domain,
+        "source":            "c-tas",
+        "reported_at":       row.get("datetime", "").strip(),
+        "category":          category,
+        "raw_message":       row.get("smsMsg", "").strip() or None,
     }
 
 
@@ -102,9 +125,11 @@ def load_csv_file(csv_path: Path) -> tuple[int, int]:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO blacklist
-                        (url_hash, url, domain, source, reported_at, category, raw_message)
+                        (url_hash, url, domain, registered_domain,
+                         source, reported_at, category, raw_message)
                     VALUES
-                        (:url_hash, :url, :domain, :source, :reported_at, :category, :raw_message)
+                        (:url_hash, :url, :domain, :registered_domain,
+                         :source, :reported_at, :category, :raw_message)
                     """,
                     record,
                 )
@@ -161,8 +186,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dir",
         type=Path,
-        default=Path(__file__).parent.parent / "data" / "blacklist",
-        help="CSV 파일 디렉토리 경로 (기본값: backend/data/blacklist/)",
+        default=Path(__file__).resolve().parents[2] / "data" / "blacklist",
+        help="CSV 파일 디렉토리 경로 (기본값: data/blacklist/)",
     )
     parser.add_argument(
         "--file",
