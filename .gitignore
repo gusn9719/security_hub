@@ -16,6 +16,9 @@ frontend/.dart_tool/
 # Data
 data/raw/
 
+# Cloudflare Tunnel — 자격증명 파일 (시크릿)
+.cloudflared/*.json
+
 # IDE / Tools
 .DS_Store
 *.log
