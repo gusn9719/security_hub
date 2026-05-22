@@ -60,6 +60,10 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
   Future<void> _startDirectBrowse() async {
     setState(() => _isBrowseStarting = true);
     try {
+      // WebView DNS 캐시 초기화 — 이전 실패한 조회 결과가 캐시돼
+      // ERR_NAME_NOT_RESOLVED를 유발하는 문제 방지
+      await InAppWebViewController.clearAllCache();
+
       final mq = MediaQuery.of(context);
       // 논리 픽셀 사용: 컨테이너 내부는 DPR 없이 1px=1CSS px
       final screenWidth = mq.size.width.toInt();
