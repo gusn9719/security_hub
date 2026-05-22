@@ -16,6 +16,11 @@ frontend/.dart_tool/
 # Data
 data/raw/
 
+# Cloudflare Tunnel — 자격증명 및 시스템별 설정 (시크릿/로컬 전용)
+# 실제 설정은 .cloudflared/config.yml.example 을 복사해 사용
+.cloudflared/*.json
+.cloudflared/config.yml
+
 # IDE / Tools
 .DS_Store
 *.log

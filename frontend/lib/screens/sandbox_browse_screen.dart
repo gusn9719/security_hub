@@ -50,6 +50,9 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
   String? _errorMessage;
   bool _sessionExpired = false;
   bool _voteDone = false;
+  // onLoadStart가 한 번이라도 불리면 메인 URL 접속 성공 —
+  // 이후 onReceivedError는 서브리소스 오류이므로 오버레이 억제
+  bool _loadStarted = false;
 
   InAppWebViewController? _webViewController;
 
@@ -317,6 +320,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           ),
           onWebViewCreated: (controller) {
             _webViewController = controller;
+            debugPrint('[SandboxBrowse] 로드 URL: ${widget.novncUrl}');
 
             // ── 세션 종료 감지 핸들러 ─────────────────────────────────────
             // JS 측에서 window.flutter_inappwebview.callHandler('onVncDisconnect')
@@ -353,7 +357,10 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             debugPrint('[KasmVNC JS ${msg.messageLevel}] ${msg.message}');
           },
           onLoadStart: (_, __) {
-            if (mounted) setState(() => _isLoading = true);
+            if (mounted) setState(() {
+              _isLoading = true;
+              _loadStarted = true;
+            });
           },
           onLoadStop: (controller, url) async {
             if (mounted) setState(() => _isLoading = false);
@@ -633,6 +640,16 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             }
           },
           onReceivedError: (controller, request, error) {
+            debugPrint(
+              '[SandboxBrowse] 로드 오류'
+              ' | mainFrame=${request.isForMainFrame}'
+              ' | loadStarted=$_loadStarted'
+              ' | url=${request.url}'
+              ' | ${error.type}: ${error.description}',
+            );
+            // onLoadStart가 이미 불렸으면 메인 URL은 정상 접속된 것
+            // → 이후 에러는 서브리소스(외부 도메인 등) 오류이므로 오버레이 억제
+            if (_loadStarted) return;
             if (mounted) {
               setState(() {
                 _isLoading = false;

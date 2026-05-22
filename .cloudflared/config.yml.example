@@ -1,0 +1,25 @@
+# =============================================================================
+# Cloudflare Named Tunnel 설정 파일
+# 사용법:
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create security-hub
+#      → C:\Users\<user>\.cloudflared\<UUID>.json 생성됨
+#   3. 아래 tunnel / credentials-file / hostname 을 실제 값으로 교체
+#   4. cloudflared tunnel route dns security-hub api.your-domain.com
+#   5. cloudflared tunnel run security-hub
+# =============================================================================
+
+# `cloudflared tunnel list` 에서 확인한 UUID
+tunnel: REPLACE_WITH_YOUR_TUNNEL_UUID
+
+# `cloudflared tunnel create` 시 생성된 인증 파일 경로
+credentials-file: C:\Users\user\.cloudflared\REPLACE_WITH_YOUR_TUNNEL_UUID.json
+
+ingress:
+  # FastAPI 백엔드 (포트 8000)
+  # noVNC WebSocket 프록시(/sandbox/browse/.../novnc)도 이 경로를 통해 처리됨
+  - hostname: api.your-domain.com   # ← 실제 도메인으로 교체
+    service: http://localhost:8000
+
+  # 매칭되지 않는 요청은 404 반환 (필수)
+  - service: http_status:404
