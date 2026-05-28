@@ -62,6 +62,11 @@ class _HomeScreenState extends State<HomeScreen>
     });
     PlatformService.setMethodCallHandler(_handlePlatformCall);
     _smsSub = PlatformService.incomingSmsStream.listen(_showIncomingSmsBar);
+
+    // TextField suffixIcon(지우기 버튼) 표시/숨김을 입력 변화에 동기화한다.
+    _textController.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -489,11 +494,23 @@ class _HomeScreenState extends State<HomeScreen>
             maxLines: 6,
             minLines: 6,
             style: const TextStyle(fontSize: 15, color: Color(0xFF1F2937), height: 1.6),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: '분석할 내용을 입력하세요.\n\n의심되는 URL, 코드, 메시지 등을 입력해주세요...',
-              hintStyle: TextStyle(color: Color(0xFFADB5BD), fontSize: 14, height: 1.6),
-              contentPadding: EdgeInsets.all(18),
+              hintStyle: const TextStyle(color: Color(0xFFADB5BD), fontSize: 14, height: 1.6),
+              contentPadding: const EdgeInsets.all(18),
               border: InputBorder.none,
+              // 입력값이 있을 때만 우상단에 X 아이콘 표시 — 누르면 입력·결과 모두 초기화.
+              suffixIcon: _textController.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 20, color: Color(0xFF9CA3AF)),
+                      tooltip: '입력 지우기',
+                      onPressed: () {
+                        _textController.clear();
+                        setState(() => _currentResult = null);
+                        _animationController.reset();
+                      },
+                    ),
             ),
           ),
         ),

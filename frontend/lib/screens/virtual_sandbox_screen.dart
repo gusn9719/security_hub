@@ -14,6 +14,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../services/api_service.dart';
 import 'sandbox_browse_screen.dart';
@@ -45,7 +46,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
   // 스크린샷 순서별 레이블 (최대 3장)
   static const _screenshotLabels = [
     '① 접속 직후',
-    '② 가짜 정보 주입 후',
+    '② 가짜 정보 입력 후',
     '③ 제출 시도 후',
   ];
 
@@ -60,10 +61,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
   Future<void> _startDirectBrowse() async {
     setState(() => _isBrowseStarting = true);
     try {
-      // WebView DNS 캐시 초기화 — 이전 실패한 조회 결과가 캐시돼
-      // ERR_NAME_NOT_RESOLVED를 유발하는 문제 방지
       await InAppWebViewController.clearAllCache();
-
       final mq = MediaQuery.of(context);
       // 논리 픽셀 사용: 컨테이너 내부는 DPR 없이 1px=1CSS px
       final screenWidth = mq.size.width.toInt();
@@ -187,7 +185,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '가상 샌드박스 분석',
+              '안전 분석',
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
@@ -262,7 +260,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
                   child: Column(
                     children: [
                       Text(
-                        _isBrowseStarting ? '컨테이너 생성 중...' : '직접 탐방',
+                        _isBrowseStarting ? '준비 중...' : '직접 둘러보기',
                         style: const TextStyle(
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
@@ -270,7 +268,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
                       ),
                       const SizedBox(height: 2),
                       const Text(
-                        '격리 컨테이너 Chromium을 직접 조작',
+                        '안전한 가상 화면에서 내가 직접 확인',
                         style: TextStyle(fontSize: 11),
                       ),
                     ],
@@ -303,12 +301,12 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
                   child: Column(
                     children: [
                       Text(
-                        'AI 자동 분석',
+                        'AI가 대신 확인',
                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
                       ),
                       SizedBox(height: 2),
                       Text(
-                        '가짜 정보 주입으로 피싱 폼 자동 탐지',
+                        'AI가 가상 사용자처럼 들어가서 위험을 찾아드려요',
                         style: TextStyle(fontSize: 11),
                       ),
                     ],
@@ -343,7 +341,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           SizedBox(width: 8),
           Expanded(
             child: Text(
-              '격리된 서버 컨테이너에서 실행 중입니다. 실제 기기에는 영향이 없습니다.',
+              '안전한 가상 공간에서 열어보고 있어요. 내 폰에는 아무 영향 없어요.',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 12,
@@ -365,12 +363,12 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
           CircularProgressIndicator(color: Color(0xFF60A5FA)),
           SizedBox(height: 20),
           Text(
-            'AI 자동 분석 중...',
+            'AI가 확인 중이에요...',
             style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
           ),
           SizedBox(height: 6),
           Text(
-            'Docker 컨테이너 기동 및 피싱 폼 탐지에 최대 2분이 소요됩니다.',
+            '준비에 최대 2분 정도 걸려요. 잠시만요.',
             style: TextStyle(color: Color(0xFF6B7280), fontSize: 12),
             textAlign: TextAlign.center,
           ),
@@ -508,7 +506,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
                     Icon(scoreIcon, color: scoreColor, size: 16),
                     const SizedBox(width: 6),
                     Text(
-                      'AI 위협 점수: $scoreLabel',
+                      'AI가 판단한 위험도: $scoreLabel',
                       style: TextStyle(
                         color: scoreColor,
                         fontSize: 15,
@@ -520,7 +518,7 @@ class _VirtualSandboxScreenState extends State<VirtualSandboxScreen> {
                 if (_redirectCount > 0) ...[
                   const SizedBox(height: 5),
                   Text(
-                    '리다이렉트 $_redirectCount회 감지',
+                    '주소가 $_redirectCount번 자동으로 바뀌었어요',
                     style: const TextStyle(
                       color: Color(0xFF9CA3AF),
                       fontSize: 12,

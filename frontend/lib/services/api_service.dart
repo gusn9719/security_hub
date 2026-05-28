@@ -28,6 +28,7 @@ class ApiService {
   static const String _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: 'http://10.0.2.2:8000',
+    // defaultValue: 'http://172.31.57.14:8000',
   );
 
   static const String _uuidKey = 'device_uuid';
@@ -100,13 +101,13 @@ class ApiService {
         body: jsonEncode({'url': url}),
       ).timeout(
         const Duration(seconds: 60),
-        onTimeout: () => throw Exception('샌드박스 응답 시간이 초과되었습니다. (컨테이너 생성 포함 60초)'),
+        onTimeout: () => throw Exception('분석이 너무 오래 걸려요. 잠시 후 다시 시도해 주세요.'),
       );
 
       if (response.statusCode == 200) {
         return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       } else {
-        throw Exception('샌드박스 서버 오류 (${response.statusCode})');
+        throw Exception('분석 서버에 일시적인 문제가 생겼어요 (${response.statusCode})');
       }
     } on SocketException {
       throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
@@ -137,15 +138,14 @@ class ApiService {
       ).timeout(
         const Duration(seconds: 120),
         onTimeout: () => throw Exception(
-          'AI 자동 분석 응답 시간이 초과되었습니다. '
-          '(컨테이너 기동 포함 최대 120초)',
+          'AI 분석이 너무 오래 걸려요. 잠시 후 다시 시도해 주세요.',
         ),
       );
 
       if (response.statusCode == 200) {
         return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       } else {
-        throw Exception('샌드박스 서버 오류 (${response.statusCode})');
+        throw Exception('분석 서버에 일시적인 문제가 생겼어요 (${response.statusCode})');
       }
     } on SocketException {
       throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
@@ -179,13 +179,13 @@ class ApiService {
         }),
       ).timeout(
         const Duration(seconds: 90),
-        onTimeout: () => throw Exception('컨테이너 시작 응답 시간이 초과되었습니다. (최대 90초)'),
+        onTimeout: () => throw Exception('화면 준비가 너무 오래 걸려요. 잠시 후 다시 시도해 주세요.'),
       );
 
       if (response.statusCode == 200) {
         return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       } else if (response.statusCode == 503) {
-        throw Exception('Docker가 실행 중이지 않습니다. Docker Desktop을 시작한 후 다시 시도해 주세요.');
+        throw Exception('서버가 잠시 점검 중이에요. 잠시 후 다시 시도해 주세요.');
       } else {
         throw Exception('서버 오류 (${response.statusCode}): ${response.body}');
       }
@@ -198,11 +198,11 @@ class ApiService {
   // Sprint 7-A: 투표 API (/sandbox/votes)
   // ---------------------------------------------------------------------------
 
-  /// 7-A 직접 탐방 세션 종료 후 사용자 위험도 투표를 제출한다.
+  /// 7-A 직접 탐방 세션 종료 후 사용자 피드백 투표를 제출한다.
   ///
   /// [url]:       투표 대상 URL
   /// [sessionId]: 탐방 세션 ID (container_id) — 세션당 1회만 허용
-  /// [vote]:      "safe" 또는 "danger"
+  /// [vote]:      "safe" | "danger" | "spam" | "unsure"
   /// 반환값: {"success": bool, "message": str}
   /// 실패 시 예외를 throw하지 않고 success=false를 반환한다.
   static Future<Map<String, dynamic>> submitVote(
