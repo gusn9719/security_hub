@@ -110,7 +110,7 @@ def init_db() -> None:
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
                 url_hash          TEXT    NOT NULL,
                 url               TEXT    NOT NULL,
-                vote              TEXT    NOT NULL CHECK(vote IN ('safe', 'danger')),
+                vote              TEXT    NOT NULL CHECK(vote IN ('safe', 'danger', 'spam', 'unsure')),
                 voted_at          TEXT    NOT NULL,
                 session_id        TEXT,
                 device_uuid       TEXT    NOT NULL DEFAULT '',
@@ -127,10 +127,21 @@ def init_db() -> None:
             ON url_votes (session_id)
             WHERE session_id IS NOT NULL
         """)
+        # 어그로 방어 Layer 1 — 의미 있는 투표(safe/danger/spam)만 슬롯 점유.
+        # v0527: WHERE 조건에 `vote IN ('safe','danger','spam')` 추가.
+        # 변경 사유: 'unsure' 투표가 향후 진짜 의견(safe/danger/spam)을 막지
+        #            못하도록 부분 UNIQUE 적용. (vote_service.py 는 'unsure' 를
+        #            애초에 INSERT 하지 않지만, 직접 SQL INSERT 등 우회 경로
+        #            대비 DB 차원에서도 동일 정책 강제.)
+        # 마이그레이션: 기존 인덱스를 DROP 후 재생성. WHERE 절 변경은
+        # CREATE INDEX IF NOT EXISTS 가 감지하지 못하므로 명시 DROP 필요.
+        conn.execute("DROP INDEX IF EXISTS idx_votes_device_domain")
         conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_device_domain
+            CREATE UNIQUE INDEX idx_votes_device_domain
             ON url_votes (device_uuid, registered_domain)
-            WHERE device_uuid != '' AND registered_domain IS NOT NULL
+            WHERE device_uuid != ''
+              AND registered_domain IS NOT NULL
+              AND vote IN ('safe', 'danger', 'spam')
         """)
 
         # ── 샌드박스 결과 테이블 ─────────────────────────────────────────

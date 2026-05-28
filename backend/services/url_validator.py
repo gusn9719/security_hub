@@ -27,10 +27,17 @@ except ImportError:
 # 0단계: 위험 스킴 검사
 # =============================================================================
 
-# KISA 취약점 가이드 EP(인코딩 우회) / SI(서버정보) 항목 대응
-# javascript:, data:, vbscript: → 스크립트 직접 실행
-# file: → 로컬 파일 접근
-# blob: → ANL-00: Blob URL은 로컬 blob 객체를 가리키며 외부 탐지가 불가능하다
+# 위험 URL 스킴 — 0단계 즉시 DANGER 처리 대상.
+#
+# javascript:, data:, vbscript: → 스크립트 직접 실행 (DOM XSS 유사 위협)
+# file:                          → 로컬 파일 접근
+# blob:                          → ANL-00: Blob URL 은 메모리 객체를 가리키므로
+#                                  외부 탐지 불가. 첨부 메시지에 등장 시 위험 신호.
+#
+# 출처: [KISA-PDF] Web Application 가이드의 CI(코드 인젝션) 항목은 LDAP/OS
+#       Command/SSI 인젝션 등을 다루지만 URL 스킴은 직접 매핑되지 않음.
+#       본 정책은 OWASP "URL Schema Whitelisting" 가이드와 일반적인 안전 브라우징
+#       관행을 근거로 한다.
 DANGEROUS_SCHEMES: frozenset[str] = frozenset({
     "javascript",
     "data",
@@ -67,9 +74,13 @@ _DOUBLE_ENCODING_RE = re.compile(r"%25[0-9a-fA-F]{2}")
 
 def has_double_encoding(url: str) -> bool:
     """
-    URL에 이중 인코딩(%25xx) 이 존재하는지 확인한다 (KISA EP 항목).
+    URL에 이중 인코딩(%25xx) 이 존재하는지 확인한다.
 
-    %252F  →  %25 + 2F  →  실제 해석 시 /  → 보안 필터 우회에 사용됨.
+    %252F  →  %25 + 2F  →  실제 해석 시 /  → 보안 필터(WAF) 우회에 사용.
+
+    출처: [OWASP] "Double Encoding" 공격 카탈로그.
+          [KISA-PDF] X장 15절(파일 다운로드 FD)의 '우회 방안 예시' 표에
+          이중 URL 인코딩 (.%252e, /%252f, \\%255c)이 명시되어 있음.
 
     [url]: 검사 대상 URL
     반환값: True = 이중 인코딩 패턴 감지
@@ -97,7 +108,12 @@ def normalize_idn_hostname(hostname: str) -> tuple[str, bool]:
     예: 'раурal.com' (키릴 문자) → 'xn--aypal-uya.com', is_idn=True
     ASCII 전용 호스트는 그대로 반환하고 is_idn=False.
 
-    homograph 공격 탐지에 사용된다 (KISA SF 항목).
+    homograph 공격 탐지에 사용된다.
+
+    출처: [UTS39] Unicode Technical Standard #39 "Security Mechanisms" —
+          mixed-script confusables 정의.
+          [KISA-IDN] KISA 동형이의자 공격 분석 자료.
+    (KISA 취약점 가이드 본책의 SF 항목은 SSRF 로, 본 함수와 직접 매핑되지 않음.)
 
     [hostname]: 호스트명 문자열
     반환값: (ascii_hostname, is_idn_detected)
@@ -111,6 +127,38 @@ def normalize_idn_hostname(hostname: str) -> tuple[str, bool]:
     except UnicodeError:
         # 변환 실패해도 IDN 감지 플래그는 설정 (UnicodeDecodeError 는 UnicodeError 서브클래스)
         return hostname, True
+
+
+# =============================================================================
+# userinfo(@) 인젝션 검사 — 호스트 위장 패턴
+# =============================================================================
+
+def check_userinfo_injection(url: str) -> bool:
+    """
+    URL 에 userinfo(@ 앞부분) 가 포함되어 호스트 위장이 가능한지 확인.
+
+    예: https://naver.com@evil.kr/login
+        urlparse 결과 → username='naver.com', hostname='evil.kr'
+        브라우저는 @ 앞을 인증 사용자명으로 무시하고 실제로 evil.kr 에 접속.
+        모바일에서 화면이 좁으면 @ 뒤가 잘려 사용자가 정상 도메인으로 오인.
+
+    설계 결정:
+        - parsed.username 이 비어 있지 않으면 무조건 True.
+        - HTTP(S) 에 합법적 userinfo 가 필요한 정상 케이스는 사실상 없음
+          (FTP 등 다른 스킴에서만 합법). 현대 브라우저도 경고 표시.
+        - 잠재적 false positive 보다 false negative 회피가 우선.
+
+    출처: [RFC3986] §3.2.1 userinfo 컴포넌트 — 본래 ftp://user@host 의
+          인증 정보 전달용. HTTP(S) 에서는 사칭 도구로 악용.
+
+    [url]: 검사 대상 URL
+    반환값: True = userinfo 컴포넌트 감지 (사칭 의심)
+    """
+    try:
+        parsed = urlparse(url)
+        return bool(parsed.username)
+    except Exception:
+        return False
 
 
 # =============================================================================

@@ -51,8 +51,10 @@ EXPLANATION_DICT: dict[str, dict] = {
     },
 
     # ── 휴리스틱 시그널 ───────────────────────────────────────────────────
+    # 시그널 키는 heuristic_scorer._WEIGHTS 와 1:1 대응.
+    # 각 시그널의 출처·근거는 heuristic_scorer.py 의 _WEIGHTS 인접 주석 참조.
 
-    # SI 항목
+    # IP 직접 접속 — 추적 회피 의도
     "ip_in_url": {
         "icon":  "🔢",
         "title": "IP 주소를 직접 사용한 링크",
@@ -62,7 +64,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # WM 항목 — 서브도메인 위장
+    # 서브도메인 부분에 유명 TLD 끼워넣기 위장
     "subdomain_spoofing": {
         "icon":  "🎭",
         "title": "도메인 위장 의심",
@@ -72,7 +74,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # WM 항목 — 브랜드 키워드 사칭
+    # 브랜드 키워드 사칭 — 호스트명에 유명 브랜드명, 등록 도메인은 비공식
     "brand_keyword_mismatch": {
         "icon":  "⚠️",
         "title": "유명 브랜드·기관 사칭 의심",
@@ -82,7 +84,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # SF 항목 — homograph
+    # IDN 동형이의자 공격 — 비ASCII 혼동 문자
     "homograph_idn": {
         "icon":  "🔤",
         "title": "시각적으로 유사한 가짜 주소",
@@ -92,7 +94,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # EP 항목 — 이중 인코딩
+    # 이중 URL 인코딩 — WAF 우회 기법
     "double_encoding": {
         "icon":  "🔃",
         "title": "이중 인코딩된 URL",
@@ -102,7 +104,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # FD 항목 — 위험 파일
+    # 악성 파일 직링크 (.apk/.exe 등) — 한국 스미싱 1순위 패턴
     "dangerous_extension": {
         "icon":  "📦",
         "title": "악성 파일 다운로드 가능성",
@@ -122,7 +124,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # IL 항목 — 과다 서브도메인
+    # 과다 서브도메인 — 모바일에서 실제 도메인을 화면 밖으로 밀어내는 수법
     "excessive_subdomains": {
         "icon":  "🌿",
         "title": "비정상적으로 복잡한 주소 구조",
@@ -142,7 +144,7 @@ EXPLANATION_DICT: dict[str, dict] = {
         ),
     },
 
-    # IL 항목 — 긴 URL
+    # URL 100자 초과 — 파라미터 난수화·경로 위장 패턴
     "url_too_long": {
         "icon":  "📏",
         "title": "비정상적으로 긴 URL",
@@ -203,6 +205,94 @@ EXPLANATION_DICT: dict[str, dict] = {
         "desc":  (
             "이전 방문자 중 일부가 이 링크를 위험하다고 평가했습니다. "
             "접속에 주의하세요."
+        ),
+    },
+    "prior_spam_vote_high": {
+        "icon":  "📢",
+        "title": "다수 사용자가 광고/스팸으로 신고",
+        "desc":  (
+            "10명 이상의 이전 방문자가 이 링크를 광고·스팸으로 평가했습니다. "
+            "사기 위험은 낮을 수 있지만 마케팅성 페이지일 가능성이 큽니다."
+        ),
+    },
+    "prior_spam_vote_low": {
+        "icon":  "📢",
+        "title": "광고/스팸 신고 이력 있음",
+        "desc":  (
+            "이전 방문자 중 일부가 이 링크를 광고·스팸으로 평가했습니다."
+        ),
+    },
+
+    # 사용자 안전 검증 시그널 (v0527 신규, 음의 가중치 — 톤 완화용)
+    "prior_safe_vote_high": {
+        "icon":  "🛡️",
+        "title": "다수 사용자가 안전 확인",
+        "desc":  (
+            "10명 이상의 이전 방문자가 이 링크를 안전하다고 평가했습니다. "
+            "다만 본 앱은 화이트리스트 확인 없이는 SAFE 판정을 내리지 않습니다."
+        ),
+    },
+    "prior_safe_vote_low": {
+        "icon":  "🛡️",
+        "title": "사용자 안전 평가 이력",
+        "desc":  (
+            "이전 방문자 중 일부가 이 링크를 안전하다고 평가했습니다."
+        ),
+    },
+
+    # ── v0527 신규 시그널 ─────────────────────────────────────────────────
+
+    # @ userinfo 인젝션 — RFC3986 userinfo 악용
+    "userinfo_injection": {
+        "icon":  "🎯",
+        "title": "주소에 '@' 가 포함된 위장 링크",
+        "desc":  (
+            "주소 안에 '@' 기호가 있어 실제 접속 도메인이 표시된 것과 다를 수 "
+            "있습니다. 예: 'naver.com@evil.kr' 는 실제로 evil.kr 로 접속됩니다. "
+            "모바일에서 가장 속기 쉬운 사칭 패턴입니다."
+        ),
+    },
+
+    # 타이포스쿼팅 — 1~2글자 변형 도메인
+    "typosquat_levenshtein": {
+        "icon":  "🔍",
+        "title": "유명 사이트와 비슷한 가짜 주소",
+        "desc":  (
+            "주소가 잘 알려진 사이트(예: naver.com, kakao.com)와 1~2글자만 "
+            "다릅니다. 오타를 노린 사칭 도메인일 가능성이 높습니다."
+        ),
+    },
+
+    # 호스트명에 피싱 행위 키워드 (login/verify/secure 등)
+    "suspicious_keywords": {
+        "icon":  "🪤",
+        "title": "주소에 의심 키워드 포함",
+        "desc":  (
+            "주소에 'login', 'verify', 'secure', 'account' 같은 단어가 호스트 "
+            "이름에 포함되어 있습니다. 정상 사이트는 보통 이런 단어를 주소 "
+            "본체보다는 경로(URL 뒷부분)에 둡니다."
+        ),
+    },
+
+    # Punycode (xn--) 노출
+    "punycode_in_url": {
+        "icon":  "🔡",
+        "title": "Punycode 형식 주소",
+        "desc":  (
+            "주소에 'xn--' 로 시작하는 부분이 있습니다. 한글·외국어 도메인을 "
+            "ASCII 로 변환한 표기인데, 사칭에 악용되기도 합니다. 원래 도메인을 "
+            "확인하세요."
+        ),
+    },
+
+    # 도메인 하이픈 3개 이상
+    "many_hyphens": {
+        "icon":  "➖",
+        "title": "도메인에 하이픈 다수",
+        "desc":  (
+            "주소 본체에 하이픈(-)이 여러 개 포함되어 있습니다. 정상 도메인은 "
+            "보통 1~2개 이내인데 비해, 키워드를 조합한 사칭 도메인이 다수 "
+            "하이픈을 사용하는 패턴이 자주 관찰됩니다."
         ),
     },
 
