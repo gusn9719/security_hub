@@ -20,12 +20,6 @@ import uuid as _uuid_mod
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
-# .env 파일을 os.environ에 먼저 로드한다.
-# config.py가 모듈 최상위에서 os.environ.get("BASE_URL") 등을 평가하므로
-# 다른 모듈 임포트 전에 반드시 호출해야 한다.
-from dotenv import load_dotenv
-load_dotenv()
-
 # Windows의 ProactorEventLoop은 asyncio SSL 연결에서 실제 SSL 오류를
 # ConnectionRefusedError로 잘못 변환하는 버그가 있다.
 # SelectorEventLoop으로 전환해 SSL 연결이 정상 작동하도록 한다.

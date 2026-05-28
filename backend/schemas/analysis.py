@@ -81,7 +81,7 @@ class VoteRequest(BaseModel):
 
     url: str
     session_id: str
-    vote: str = Field(..., pattern=r"^(safe|danger)$")
+    vote: str = Field(..., pattern=r"^(safe|danger|spam|unsure)$")
     device_uuid: str = Field(default="")
 
 

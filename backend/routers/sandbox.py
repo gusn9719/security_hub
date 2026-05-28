@@ -183,9 +183,6 @@ async def browse_create(http_request: Request, request: BrowseCreateRequest) -> 
     if _cfg.BASE_URL:
         # 환경변수로 외부 URL이 명시된 경우 (가장 신뢰할 수 있음)
         base_origin = _cfg.BASE_URL.rstrip("/")
-        # 스킴 누락 시 https:// 자동 보완 (예: BASE_URL=xxxx.trycloudflare.com)
-        if "://" not in base_origin:
-            base_origin = "https://" + base_origin
         scheme = "https" if base_origin.startswith("https://") else "http"
         # host_header는 noVNC &host= 파라미터에 사용 — BASE_URL에서 추출
         host_header = base_origin.split("://", 1)[1].split("/")[0]

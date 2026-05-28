@@ -127,7 +127,9 @@ class TestVoteSignal:
 # =============================================================================
 
 class TestSandboxScoreSignal:
-    """PROMPT-6: sandbox_score 시그널 — sandbox_danger_score (+30)."""
+    """PROMPT-6: sandbox_score 시그널 — sandbox_danger_score (+40).
+    v0527: 30 → 40 상향 (능동 탐지 권위 반영, heuristic_scorer 참조).
+    """
 
     _CLEAN_URL = "https://test-signal-only.example.com/path"
 
@@ -142,13 +144,13 @@ class TestSandboxScoreSignal:
         assert "sandbox_danger_score" not in result.triggered
 
     def test_sandbox_score_exactly_70_triggers(self):
-        """TC-NF-12: sandbox_score=70 정확히 임계값 — 시그널 발화 (+30)."""
+        """TC-NF-12: sandbox_score=70 정확히 임계값 — 시그널 발화 (+40)."""
         result = score_url(self._CLEAN_URL, sandbox_score=70)
         assert "sandbox_danger_score" in result.triggered
-        assert result.triggered["sandbox_danger_score"] == 30
+        assert result.triggered["sandbox_danger_score"] == 40
 
     def test_sandbox_score_100_triggers(self):
-        """TC-NF-13: sandbox_score=100 → 시그널 발화 (+30)."""
+        """TC-NF-13: sandbox_score=100 → 시그널 발화 (+40)."""
         result = score_url(self._CLEAN_URL, sandbox_score=100)
         assert "sandbox_danger_score" in result.triggered
 
