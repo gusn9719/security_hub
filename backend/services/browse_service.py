@@ -93,6 +93,11 @@ _WS_PROXY_INJECT = (
 # JS 버전 — webpack 번들 파일 앞에 선삽입해 KasmVNC 코드가 window.WebSocket을 캡처하기 전에 패치한다.
 # KasmVNC가 <head> 내 <script> 태그로 번들을 로드할 경우 HTML 주입보다 먼저 실행된다.
 # __shP 플래그로 여러 번들 파일에 걸쳐 중복 패치를 방지한다.
+#
+# Keepalive (__shKA): KasmVNC SelectTimeout / nginx proxy_read_timeout이 ~30초로
+# idle 클라이언트를 끊는 문제 회피. 25초마다 noVNC canvas에 1픽셀 합성 마우스 이동을
+# dispatch해 noVNC가 PointerEvent를 WebSocket으로 송신하도록 유도한다.
+# 실 사용자 입력과 충돌하지 않도록 화면 좌상단(0,0) 1픽셀 위치만 사용.
 _WS_PROXY_JS = (
     b";(function(){"
     b"if(window.WebSocket&&window.WebSocket.__shP)return;"
@@ -117,6 +122,13 @@ _WS_PROXY_JS = (
     b"}"
     b"});"
     b"window.WebSocket.__shP=1;"
+    b"if(!window.__shKA){window.__shKA=1;setInterval(function(){"
+    b"try{var c=document.querySelector('canvas');if(!c)return;"
+    b"var r=c.getBoundingClientRect();"
+    b"var ev=new MouseEvent('mousemove',{bubbles:true,cancelable:true,view:window,"
+    b"clientX:r.left+1,clientY:r.top+1,movementX:0,movementY:0});"
+    b"c.dispatchEvent(ev);}catch(e){}"
+    b"},25000);}"
     b"})();\n"
 )
 

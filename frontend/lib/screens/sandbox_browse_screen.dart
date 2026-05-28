@@ -50,11 +50,8 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
   String? _errorMessage;
   bool _sessionExpired = false;
   bool _voteDone = false;
-  // onLoadStart가 한 번이라도 불리면 메인 URL 접속 성공 —
-  // 이후 onReceivedError는 서브리소스 오류이므로 오버레이 억제
   bool _loadStarted = false;
 
-  InAppWebViewController? _webViewController;
 
   @override
   void dispose() {
@@ -79,7 +76,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             Icon(Icons.how_to_vote_rounded, color: Color(0xFF60A5FA), size: 22),
             SizedBox(width: 8),
             Text(
-              '탐방 결과 투표',
+              '방문해 보니 어땠어요?',
               style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
             ),
           ],
@@ -89,37 +86,49 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '직접 방문 후 이 사이트가 어떻게 느껴지셨나요?\n투표는 데이터베이스 개선에 활용됩니다.',
+              '다른 사용자에게도 도움이 돼요. 1초만 알려주세요.',
               style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13, height: 1.5),
             ),
             const SizedBox(height: 16),
             Row(
               children: [
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(ctx, 'safe'),
-                    icon: const Icon(Icons.check_circle_outline, size: 18),
-                    label: const Text('안전'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF10B981),
-                      side: const BorderSide(color: Color(0xFF10B981)),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
+                  child: _voteButton(
+                    ctx, 'safe',
+                    icon: Icons.check_circle_outline,
+                    label: '괜찮아요',
+                    color: const Color(0xFF10B981),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(ctx, 'danger'),
-                    icon: const Icon(Icons.dangerous_rounded, size: 18),
-                    label: const Text('위험'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFDC2626),
-                      side: const BorderSide(color: Color(0xFFDC2626)),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
+                  child: _voteButton(
+                    ctx, 'spam',
+                    icon: Icons.campaign_outlined,
+                    label: '광고/스팸',
+                    color: const Color(0xFFF59E0B),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _voteButton(
+                    ctx, 'danger',
+                    icon: Icons.dangerous_rounded,
+                    label: '위험해요',
+                    color: const Color(0xFFDC2626),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _voteButton(
+                    ctx, 'unsure',
+                    icon: Icons.help_outline,
+                    label: '잘 모르겠어요',
+                    color: const Color(0xFF9CA3AF),
                   ),
                 ),
               ],
@@ -129,7 +138,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('건너뜀', style: TextStyle(color: Color(0xFF6B7280))),
+            child: const Text('건너뛰기', style: TextStyle(color: Color(0xFF6B7280))),
           ),
         ],
       ),
@@ -142,10 +151,34 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
     return true;
   }
 
+  Widget _voteButton(
+    BuildContext ctx,
+    String value, {
+    required IconData icon,
+    required String label,
+    required Color color,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: () => Navigator.pop(ctx, value),
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: color,
+        side: BorderSide(color: color),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
   Future<void> _exitWithVote() async {
     await _showVoteModal();
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      // 직접 탐방 종료 → 모드 선택 화면을 건너뛰고 곧장 홈으로 복귀 (UX: 사용자 통제·자유).
+      Navigator.popUntil(context, (route) => route.isFirst);
+    }
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -154,7 +187,9 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         await _showVoteModal();
-        if (mounted) Navigator.pop(context);
+        if (mounted) {
+          Navigator.popUntil(context, (route) => route.isFirst);
+        }
       },
       child: Scaffold(
       backgroundColor: const Color(0xFF111827),
@@ -169,7 +204,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '직접 탐방 모드',
+              '안전한 가상 화면',
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
@@ -188,7 +223,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             onPressed: _exitWithVote,
             icon: const Icon(Icons.stop_circle_outlined, size: 18, color: Color(0xFFF87171)),
             label: const Text(
-              '탐방 종료',
+              '나가기',
               style: TextStyle(color: Color(0xFFF87171), fontSize: 13),
             ),
           ),
@@ -215,7 +250,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           SizedBox(width: 8),
           Expanded(
             child: Text(
-              '이 화면은 격리된 서버 컨테이너입니다. 실제 개인정보를 절대 입력하지 마세요.',
+              '여기는 안전한 임시 화면이에요. 실제 정보(전화번호·계좌·비밀번호)는 입력하지 마세요.',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 12,
@@ -319,9 +354,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             supportZoom: false,
           ),
           onWebViewCreated: (controller) {
-            _webViewController = controller;
             debugPrint('[SandboxBrowse] 로드 URL: ${widget.novncUrl}');
-
             // ── 세션 종료 감지 핸들러 ─────────────────────────────────────
             // JS 측에서 window.flutter_inappwebview.callHandler('onVncDisconnect')
             // 를 호출하면 Flutter 오버레이로 전환한다.
@@ -359,7 +392,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           onLoadStart: (_, __) {
             if (mounted) setState(() {
               _isLoading = true;
-              _loadStarted = true;
+              _loadStarted = true;  // ← 추가
             });
           },
           onLoadStop: (controller, url) async {
@@ -483,6 +516,102 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
                       document.documentElement,
                       { childList: true, subtree: true, attributes: true,
                         attributeFilter: ['style', 'class'] }
+                    );
+                  }
+
+                  // ── 2.5. noVNC 다이얼로그 한국화 + Kasm 브랜딩 숨김 ──────
+                  // Reconnecting/Disconnected 등 영어 다이얼로그가 동적으로 뜨는데
+                  // ID/class가 빌드별로 달라 selector 일괄 숨김이 어렵다.
+                  // → TreeWalker로 텍스트 노드를 순회해 한국어로 치환하고,
+                  //   img/svg 중 alt·src에 'kasm'/'novnc' 포함된 것만 표시 제거한다.
+                  var KASM_REPLACE = {
+                    'Reconnecting...': '다시 연결 중이에요...',
+                    'Reconnecting': '다시 연결 중이에요',
+                    'Disconnected': '연결이 끊어졌어요',
+                    'Connecting...': '연결 중이에요...',
+                    'Cancel': '취소',
+                    'Try Again': '다시 시도',
+                    'Authentication failure': '인증에 실패했어요',
+                    'Session expired': '세션이 종료됐어요',
+                    'Idle timeout': '오래 사용하지 않아 종료됐어요'
+                  };
+                  // "KasmVNC" 브랜드 텍스트 노드를 발견하면 ancestor를 4단계까지 따라
+                  // 올라가며 reconnect/status dialog 컨테이너 전체를 숨긴다.
+                  // (로고 SVG는 형제 element에 있어서 직접 부모만 hide하면 잔존하기 때문)
+                  function hideKasmAncestor(node) {
+                    var p = node.parentElement;
+                    for (var i = 0; i < 4 && p; i++) {
+                      // dialog/status로 보이는 컨테이너는 통째로 가린다.
+                      var cls = (p.className && p.className.toString && p.className.toString()) || '';
+                      var id  = p.id || '';
+                      if (/(dialog|status|reconnect|disconnect|panel|overlay|popup|modal)/i.test(cls + ' ' + id)) {
+                        p.style.setProperty('display', 'none', 'important');
+                        return;
+                      }
+                      p = p.parentElement;
+                    }
+                    // 매칭되는 ancestor가 없으면 직접 부모만 숨김 (fallback).
+                    if (node.parentElement) {
+                      node.parentElement.style.setProperty('display', 'none', 'important');
+                    }
+                  }
+                  function localizeKasm() {
+                    try {
+                      var w = document.createTreeWalker(
+                        document.body || document.documentElement,
+                        NodeFilter.SHOW_TEXT, null
+                      );
+                      var n;
+                      while ((n = w.nextNode())) {
+                        var v = n.nodeValue;
+                        if (!v) continue;
+                        var t = v.trim();
+                        if (!t) continue;
+                        if (t.indexOf('KasmVNC') !== -1 || t.toLowerCase().indexOf('kasmvnc') !== -1) {
+                          hideKasmAncestor(n);
+                          continue;
+                        }
+                        if (KASM_REPLACE[t]) {
+                          n.nodeValue = v.replace(t, KASM_REPLACE[t]);
+                        }
+                      }
+                      document.querySelectorAll('img, svg').forEach(function(el) {
+                        var alt = (el.getAttribute('alt') || el.getAttribute('aria-label') || '').toLowerCase();
+                        var src = (el.getAttribute('src') || '').toLowerCase();
+                        if (alt.indexOf('kasm') !== -1 || src.indexOf('kasm') !== -1 ||
+                            alt.indexOf('novnc') !== -1 || src.indexOf('novnc') !== -1) {
+                          el.style.setProperty('display', 'none', 'important');
+                        }
+                      });
+                    } catch(e) {}
+                  }
+
+                  // 한글 IME 입력 시도: compositionend로 합성된 한글 음절을
+                  // InputEvent로 다시 dispatch해 noVNC keyboard handler가 처리하도록 한다.
+                  // (RFB 프로토콜 한계로 100% 보장은 아니지만 일부 빌드에서 동작)
+                  function attachImeHandler() {
+                    var ki = document.getElementById('noVNC_keyboardinput');
+                    if (!ki || ki.__shIME) return;
+                    ki.__shIME = 1;
+                    ki.addEventListener('compositionend', function(e) {
+                      if (!e.data) return;
+                      try {
+                        var ev = new InputEvent('input', {
+                          bubbles: true, cancelable: true,
+                          inputType: 'insertText', data: e.data
+                        });
+                        ki.dispatchEvent(ev);
+                      } catch(err) {}
+                    });
+                  }
+                  attachImeHandler();
+                  setTimeout(attachImeHandler, 1000);
+                  setTimeout(attachImeHandler, 3000);
+                  localizeKasm();
+                  if (window.MutationObserver) {
+                    new MutationObserver(localizeKasm).observe(
+                      document.body || document.documentElement,
+                      { childList: true, subtree: true, characterData: true }
                     );
                   }
 
@@ -642,10 +771,10 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
           onReceivedError: (controller, request, error) {
             debugPrint(
               '[SandboxBrowse] 로드 오류'
-              ' | mainFrame=${request.isForMainFrame}'
-              ' | loadStarted=$_loadStarted'
-              ' | url=${request.url}'
-              ' | ${error.type}: ${error.description}',
+                  ' | mainFrame=${request.isForMainFrame}'
+                  ' | loadStarted=$_loadStarted'
+                  ' | url=${request.url}'
+                  ' | ${error.type}: ${error.description}',
             );
             // onLoadStart가 이미 불렸으면 메인 URL은 정상 접속된 것
             // → 이후 에러는 서브리소스(외부 도메인 등) 오류이므로 오버레이 억제
@@ -668,7 +797,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
                   CircularProgressIndicator(color: Color(0xFF60A5FA)),
                   SizedBox(height: 16),
                   Text(
-                    'KasmVNC 스트림 연결 중...',
+                    '안전한 화면을 준비하고 있어요...',
                     style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13),
                   ),
                 ],
@@ -698,7 +827,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
               ),
               const SizedBox(height: 20),
               const Text(
-                '세션이 종료되었습니다',
+                '탐방을 마쳤어요',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 18,
@@ -707,7 +836,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
               ),
               const SizedBox(height: 10),
               const Text(
-                '일정 시간 동안 활동이 없어\n격리 컨테이너가 종료되었습니다.',
+                '한동안 사용이 없어\n화면이 자동으로 닫혔어요.',
                 style: TextStyle(
                   color: Color(0xFF9CA3AF),
                   fontSize: 14,
@@ -718,8 +847,8 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: _exitWithVote,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('새 세션 시작'),
+                icon: const Icon(Icons.home_rounded),
+                label: const Text('메인으로 돌아가기'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF2563EB),
                   foregroundColor: Colors.white,
