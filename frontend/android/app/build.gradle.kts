@@ -28,6 +28,17 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // AUTH-01: 카카오 SDK redirect 스킴은 'kakao{NATIVE_APP_KEY}://oauth' 다.
+        // 키를 manifest 에 직접 박지 않고 -PkakaoNativeKey=... 빌드 인자로 주입.
+        // 사용 예:
+        //   flutter build apk --dart-define=KAKAO_NATIVE_KEY=xxxxx \
+        //                     -- -PkakaoNativeKey=xxxxx
+        // 미지정 시 빈 문자열 — 빌드는 통과하지만 카카오 로그인 시 스킴 매칭
+        // 실패. CI / 로컬 빌드 모두 같은 키를 두 군데 (Dart side / Android side)
+        // 에 넘겨야 하는 것은 카카오 SDK 의 본질적 제약.
+        manifestPlaceholders["kakaoNativeKey"] =
+            (project.findProperty("kakaoNativeKey") as String? ?: "")
     }
 
     buildTypes {

@@ -15,6 +15,9 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="http" />
         </intent>
+        <!-- AUTH-01: 카카오톡 앱 설치 여부 조회. isKakaoTalkInstalled() 의
+             내부 패키지 가시성 (Android 11+) 보장. -->
+        <package android:name="com.kakao.talk" />
     </queries>
     <application
         android:label="security_hub"
@@ -47,6 +50,28 @@
                 <action android:name="android.intent.action.SEND"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:mimeType="text/plain"/>
+            </intent-filter>
+            <!-- AUTH-01: 카카오톡 앱 미설치 시 web login 콜백 수신.
+                 scheme 의 ${kakaoNativeKey} 는 app/build.gradle.kts 의
+                 manifestPlaceholders 가 빌드 시점에 치환한다. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="kakao${kakaoNativeKey}" android:host="oauth" />
+            </intent-filter>
+        </activity>
+
+        <!-- AUTH-01: 카카오톡 앱 호출용 AuthCodeHandlerActivity. SDK 가
+             내부적으로 띄우는 액티비티이므로 사용자 코드는 따로 손대지 않는다. -->
+        <activity
+            android:name="com.kakao.sdk.auth.AuthCodeHandlerActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="kakao${kakaoNativeKey}" android:host="oauth" />
             </intent-filter>
         </activity>
         <!-- INP-05: 앱이 꺼진 상태에서도 SMS 수신 감지 (매니페스트 등록) -->
