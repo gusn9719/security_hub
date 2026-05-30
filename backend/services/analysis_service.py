@@ -170,24 +170,51 @@ class AnalysisService:
             )
 
         # ── 4단계: 화이트리스트 매칭 ──────────────────────────────────────
+        # P0-2 (보고서 D-1): 다중 URL 입력 시 primary_url 만 SAFE 검사하던
+        # 기존 동작은 "kakao.com 공지 + kb-secure.xyz 인증" 같이 합법 도메인을
+        # 앞에 둔 입력에서 피싱 URL 분석을 통째로 건너뛰는 결함이 있었다.
+        # 보수적 처리: SAFE 반환은 expanded_urls 전부가 화이트리스트에
+        # (open_redirect 없이) 히트할 때만 허용. 하나라도 미히트면 DC-06 에
+        # 따라 SUSPICIOUS 분기로 떨어진다 (3단계에서 블랙리스트는 이미 전수
+        # 검사 완료 상태).
         wl = whitelist_service.is_whitelisted(primary_url)
 
         if wl.hit and not wl.open_redirect:
-            cards = build_safe_cards(wl.risk_level)
-            logger.info(
-                "[파이프라인] 화이트리스트 SAFE — mode=%s risk=%s",
-                wl.match_mode, wl.risk_level,
+            # 다른 URL 도 모두 화이트리스트 히트인지 확인
+            other_urls = expanded_urls[1:]
+            non_whitelisted: list[str] = []
+            for ou in other_urls:
+                ou_wl = whitelist_service.is_whitelisted(ou)
+                if not (ou_wl.hit and not ou_wl.open_redirect):
+                    non_whitelisted.append(ou)
+
+            if not non_whitelisted:
+                cards = build_safe_cards(wl.risk_level)
+                logger.info(
+                    "[파이프라인] 화이트리스트 SAFE — mode=%s risk=%s (검사 URL=%d)",
+                    wl.match_mode, wl.risk_level, len(expanded_urls),
+                )
+                _schedule_history(
+                    url=primary_url, verdict="safe", registered=registered,
+                )
+                return AnalyzeResponse(
+                    status=RiskStatus.SAFE,
+                    title="안전한 링크입니다",
+                    description=cards_to_text(cards),
+                    action_label="원본 URL 열기",
+                    cards=cards,
+                )
+
+            # 다른 URL 중 화이트리스트 미히트 — SAFE 승격 차단, 미히트 URL 로
+            # primary 를 교체하여 이후 휴리스틱이 진짜 의심 대상을 평가하도록 한다.
+            logger.warning(
+                "[파이프라인] 다중 URL — 화이트리스트 SAFE 차단 (미히트 %d건). "
+                "primary 를 첫 미히트 URL 로 교체: %s",
+                len(non_whitelisted), non_whitelisted[0],
             )
-            _schedule_history(
-                url=primary_url, verdict="safe", registered=registered,
-            )
-            return AnalyzeResponse(
-                status=RiskStatus.SAFE,
-                title="안전한 링크입니다",
-                description=cards_to_text(cards),
-                action_label="원본 URL 열기",
-                cards=cards,
-            )
+            primary_url = non_whitelisted[0]
+            registered = get_registered_domain(primary_url)
+            wl = whitelist_service.is_whitelisted(primary_url)
 
         if wl.hit and wl.open_redirect:
             logger.warning(
