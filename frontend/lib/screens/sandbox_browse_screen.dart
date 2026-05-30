@@ -144,9 +144,37 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
       ),
     );
 
+    // P0-6 (보고서 audit #6): 이전에는 _voteDone=true 를 먼저 설정하고
+    // submitVote 를 fire-and-forget 으로 호출. 네트워크/서버 오류 시 사용자
+    // 에게는 '저장됨' 으로 보이는데 DB 에는 기록되지 않아 prior_danger_vote
+    // 시그널이 발동하지 못하는 무결성 결함이 있었다.
+    // 수정: await 로 결과를 확인하고, 실패면 _voteDone 을 그대로 두어
+    // 재시도가 가능하게 만든다.
     if (result != null && mounted) {
-      setState(() => _voteDone = true);
-      ApiService.submitVote(widget.url, widget.containerId, result);
+      final resp = await ApiService.submitVote(
+        widget.url,
+        widget.containerId,
+        result,
+      );
+      final ok = resp['success'] == true;
+      if (!mounted) return true;
+      if (ok) {
+        setState(() => _voteDone = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('의견이 기록되었습니다. 감사합니다.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      } else {
+        // _voteDone 은 변경하지 않는다 — 다음 종료 시 다시 모달이 떠 재시도 가능.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('투표 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     }
     return true;
   }
