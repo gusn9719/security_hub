@@ -478,7 +478,7 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildAuthBadge() {
     final user = AuthService.currentUser();
     final loggedIn = user != null;
-    final label = loggedIn ? user.displayName() : '익명';
+    final label = loggedIn ? user.displayName() : '비회원';
     final icon = loggedIn ? '👤' : '🙂';
 
     return Padding(

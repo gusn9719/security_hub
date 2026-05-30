@@ -177,7 +177,7 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
         child: const Text(
-          '지금은 익명으로 사용',
+          '비회원으로 시작',
           style: TextStyle(
             fontSize: 15,
             fontWeight: FontWeight.w500,
