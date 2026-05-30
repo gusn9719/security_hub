@@ -35,7 +35,7 @@ from starlette.responses import Response
 from routers import analyze
 from routers import sandbox
 from database.db_init import init_db
-from services.browse_service import shutdown_all_sessions
+from services.browse_service import shutdown_all_sessions, initialize_pool, cleanup_stale_networks
 from services.reputation_cache_service import purge_expired
 
 logging.basicConfig(
@@ -104,16 +104,33 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     noVNC 프록시 경로(/sandbox/browse/)는 KasmVNC HTML·JS를 그대로 서빙하므로
     CSP와 X-Frame-Options를 적용하지 않는다. 이 헤더들을 적용하면
     WebView가 noVNC JavaScript 실행과 WebSocket 연결을 차단한다.
+
+    noVNC 정적 자산(JS·CSS·이미지)은 민감 데이터가 없으므로 캐싱을 허용한다.
+    매 요청마다 재다운로드하면 초기 로딩이 10초 이상 걸리기 때문이다.
     """
     _NOVNC_PREFIX = "/sandbox/browse/"
+    # 캐시를 허용하는 noVNC 정적 자산 확장자 (세션 데이터는 WS이므로 HTTP에 없음)
+    _CACHEABLE_EXTS = frozenset({
+        ".js", ".css", ".png", ".ico", ".gif",
+        ".woff", ".woff2", ".ttf", ".svg", ".map",
+    })
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-XSS-Protection"]        = "1; mode=block"
         response.headers["Referrer-Policy"]          = "no-referrer"
-        response.headers["Cache-Control"]            = "no-store"   # NF-12
-        if not request.url.path.startswith(self._NOVNC_PREFIX):
+
+        path = request.url.path
+        # noVNC 정적 자산은 캐시 허용 — JS/CSS는 동일 파일이 반복 요청되므로
+        # no-store 를 적용하면 매번 재다운로드해 로딩 시간이 10s 이상 증가한다.
+        is_novnc_static = path.startswith(self._NOVNC_PREFIX) and any(
+            path.endswith(ext) for ext in self._CACHEABLE_EXTS
+        )
+        if not is_novnc_static:
+            response.headers["Cache-Control"] = "no-store"   # NF-12
+
+        if not path.startswith(self._NOVNC_PREFIX):
             response.headers["X-Frame-Options"]          = "DENY"
             response.headers["Content-Security-Policy"]  = "default-src 'none'"
         return response
@@ -200,6 +217,10 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("[앱 시작] 만료 평판 캐시 정리 중...")
     purge_expired()
+    logger.info("[앱 시작] 고아 Docker 네트워크 정리 중...")
+    await cleanup_stale_networks()
+    logger.info("[앱 시작] 샌드박스 풀 워밍 시작 (백그라운드)...")
+    await initialize_pool()
     logger.info("[앱 시작] 초기화 완료")
     yield
     logger.info("[앱 종료] browse 세션 정리 중...")

@@ -138,9 +138,13 @@ class AnalysisService:
 
         # ── 2단계: 단축 URL 해제 ──────────────────────────────────────────
         # 최대 3-hop 추적, SSRF 방어(사설 IP 차단), 실패 시 원본 유지
+        # expand_url 내부의 requests.head()는 블로킹 I/O이므로 to_thread로 감싼다
         expanded_urls: list[str] = []
         for url in raw_urls:
-            expanded = expand_url(url) if is_short_url(url) else url
+            if is_short_url(url):
+                expanded = await asyncio.to_thread(expand_url, url)
+            else:
+                expanded = url
             expanded_urls.append(expanded)
 
         # 대표 URL과 등록 도메인 — 이후 모든 단계에서 공유
