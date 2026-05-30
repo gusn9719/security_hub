@@ -7,7 +7,9 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../models/analysis_result.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../services/platform_service.dart';
+import '../screens/login_screen.dart';
 import '../screens/virtual_sandbox_screen.dart';
 import '../utils/url_utils.dart';
 import '../widgets/quick_chip.dart';
@@ -455,10 +457,118 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ],
       ),
+      actions: [
+        _buildAuthBadge(),
+        const SizedBox(width: 8),
+      ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),
         child: Container(height: 1, color: const Color(0xFFE5E7EB)),
       ),
+    );
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // AUTH-01: 우상단 로그인 상태 뱃지
+  //   가입자 : 👤 닉네임 — 탭하면 로그아웃 메뉴
+  //   익명   : 🙂 익명   — 탭하면 카카오 로그인 메뉴
+  // 동기 getter (AuthService.currentUser) 를 사용해 추가 빌드 비용 없음.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  Widget _buildAuthBadge() {
+    final user = AuthService.currentUser();
+    final loggedIn = user != null;
+    final label = loggedIn ? user.displayName() : '익명';
+    final icon = loggedIn ? '👤' : '🙂';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: InkWell(
+        onTap: () => _showAuthMenu(loggedIn),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF3F4F6),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFE5E7EB)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(icon, style: const TextStyle(fontSize: 14)),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 120),
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF374151),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAuthMenu(bool loggedIn) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (loggedIn)
+                  ListTile(
+                    leading: const Icon(Icons.logout, color: Color(0xFF374151)),
+                    title: const Text('로그아웃'),
+                    onTap: () async {
+                      Navigator.pop(sheetCtx);
+                      await AuthService.logout();
+                      if (!mounted) return;
+                      setState(() {});  // 뱃지 갱신
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('로그아웃되었습니다.')),
+                      );
+                    },
+                  )
+                else
+                  ListTile(
+                    leading: const Icon(Icons.login, color: Color(0xFFFEE500)),
+                    title: const Text('카카오로 로그인'),
+                    subtitle: const Text('위험 신고에 더 큰 가중치가 적용됩니다'),
+                    onTap: () {
+                      Navigator.pop(sheetCtx);
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      ).then((_) {
+                        if (mounted) setState(() {});  // 복귀 시 뱃지 갱신
+                      });
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.close, color: Color(0xFF6B7280)),
+                  title: const Text('닫기'),
+                  onTap: () => Navigator.pop(sheetCtx),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
