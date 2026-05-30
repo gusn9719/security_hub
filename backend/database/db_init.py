@@ -214,10 +214,9 @@ def init_db() -> None:
                 last_login_at   TEXT
             )
         """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_users_kakao_id
-            ON users (kakao_id)
-        """)
+        # 주의: kakao_id 가 이미 UNIQUE 제약을 가지므로 SQLite 가
+        # sqlite_autoindex_users_1 을 자동 생성한다. 별도 인덱스 추가는
+        # 쓰기 비용만 늘리므로 만들지 않는다.
 
         # ── migration: 기존 테이블에 누락 컬럼 추가 ─────────────────────
         # 주의: registered_domain 인덱스는 컬럼 존재 확인 후 생성해야 한다.
