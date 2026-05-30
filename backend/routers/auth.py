@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+# =============================================================================
+# 공용 헬퍼 — 다른 라우터에서 user_id 를 안전하게 꺼낼 때 사용
+# =============================================================================
+
+def get_optional_user_id(request: Request) -> int | None:
+    """
+    OptionalAuthMiddleware 가 채운 request.state.user_id 를 반환한다.
+
+    절대 헤더를 직접 파싱하지 않는다. 헤더 파싱은 미들웨어 한 곳에서만
+    수행되어야 미들웨어 우회 경로(예: 토큰 검증 없이 user_id 추출)가
+    원천 차단된다. 미들웨어가 채우지 않은 경우 (요청 컨텍스트가 아닌
+    경로 등) 안전하게 None 으로 폴백.
+
+    Returns:
+        int  — 유효 JWT 로 로그인된 가입자.
+        None — 익명 사용자 또는 토큰 미부착 요청.
+    """
+    return getattr(request.state, "user_id", None)
+
+
 @router.post("/kakao", response_model=AuthTokenResponse)
 async def login_with_kakao(req: KakaoLoginRequest) -> AuthTokenResponse:
     """
