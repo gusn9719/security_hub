@@ -45,7 +45,13 @@ _VALID_VOTES: tuple[str, ...] = ("safe", "danger", "spam", "unsure")
 _MEANINGFUL_VOTES: frozenset[str] = frozenset({"safe", "danger", "spam"})
 
 
-def save_vote(url: str, session_id: str, vote: str, device_uuid: str = "") -> bool:
+def save_vote(
+    url: str,
+    session_id: str,
+    vote: str,
+    device_uuid: str = "",
+    user_id: int | None = None,
+) -> bool:
     """
     사용자 투표를 url_votes 에 저장한다.
 
@@ -66,6 +72,9 @@ def save_vote(url: str, session_id: str, vote: str, device_uuid: str = "") -> bo
         session_id:  7-A 탐방 세션 ID (container_id) — UNIQUE 제약
         vote:        "safe" | "danger" | "spam" | "unsure"
         device_uuid: 기기 식별 UUID (NF-30)
+        user_id:     카카오 가입자 users.id. None 이면 익명 표.
+                     (Phase 2 — heuristic_scorer 가 가입자 표를 익명 표보다
+                      강하게 평가하는 데 사용)
 
     Returns:
         True  = 신규 저장 성공 OR unsure 정책상 무저장
@@ -110,11 +119,11 @@ def save_vote(url: str, session_id: str, vote: str, device_uuid: str = "") -> bo
                 """
                 INSERT OR IGNORE INTO url_votes
                     (url_hash, url, vote, voted_at, session_id, device_uuid,
-                     domain, registered_domain)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     domain, registered_domain, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (url_hash, url, vote, now, session_id, device_uuid,
-                 domain, registered_domain),
+                 domain, registered_domain, user_id),
             )
             saved = cursor.rowcount > 0
             if not saved:
@@ -130,34 +139,61 @@ def get_vote_counts(url: str) -> dict:
     URL 에 대한 투표 수를 반환한다.
 
     반환 키:
-        safe / danger / spam: 의미 있는 투표 카운트
-        unsure              : v0527 부터 항상 0 (DB 저장 안 함)
-        total               : safe + danger + spam (의미 있는 표 합)
+        safe / danger / spam   : 의미 있는 투표 카운트 (익명 + 가입자 합)
+        anon_safe / anon_danger / anon_spam: user_id IS NULL 인 표만
+        user_safe / user_danger / user_spam: user_id IS NOT NULL 인 표만
+        unsure                 : v0527 부터 항상 0 (DB 저장 안 함)
+        total                  : safe + danger + spam (의미 있는 표 총합)
 
-    unsure 키는 하위 호환을 위해 유지하되 항상 0. 휴리스틱 스코어러는
-    이 키를 사용하지 않는다.
+    안 / 가입자 분리는 heuristic_scorer 가 가입자 표 1 명을 익명 표 3~4 명
+    권위로 환산할 때 사용한다. 합계 키(safe/danger/spam) 는 우세 방향
+    가드(예: danger > safe) 비교용으로 그대로 유지 — 후방 호환.
 
     Args:
         url: 집계 대상 URL
 
     Returns:
-        {"safe": int, "danger": int, "spam": int, "unsure": 0, "total": int}
+        anon_*/user_* + 합계 + total + unsure(=0).
     """
     # P0-1: 블랙리스트와 동일한 정규화로 키를 만든다 (보고서 D-3).
     url_hash = compute_url_hash(normalize_url(url))
+
+    # 기본값 — DB 오류 시에도 같은 키 집합을 보장해 호출자(휴리스틱) 가
+    # KeyError 없이 동작하도록.
+    zero = {
+        "safe": 0, "danger": 0, "spam": 0, "unsure": 0,
+        "anon_safe": 0, "anon_danger": 0, "anon_spam": 0,
+        "user_safe": 0, "user_danger": 0, "user_spam": 0,
+        "total": 0,
+    }
+
     try:
         from database.db_init import get_ro_connection
         with get_ro_connection() as conn:
+            # CASE 한 줄로 익명/가입자를 동시에 집계. GROUP BY 두 컬럼.
             rows = conn.execute(
-                "SELECT vote, COUNT(*) AS cnt FROM url_votes WHERE url_hash = ? GROUP BY vote",
+                """
+                SELECT vote,
+                       CASE WHEN user_id IS NULL THEN 'anon' ELSE 'user' END AS bucket,
+                       COUNT(*) AS cnt
+                  FROM url_votes
+                 WHERE url_hash = ?
+                 GROUP BY vote, bucket
+                """,
                 (url_hash,),
             ).fetchall()
-            counts = {"safe": 0, "danger": 0, "spam": 0, "unsure": 0}
+
+            counts = dict(zero)
             for row in rows:
-                if row["vote"] in counts:
-                    counts[row["vote"]] = row["cnt"]
+                vote = row["vote"]
+                if vote not in ("safe", "danger", "spam"):
+                    continue
+                bucket = row["bucket"]   # 'anon' | 'user'
+                cnt = row["cnt"]
+                counts[f"{bucket}_{vote}"] = cnt
+                counts[vote] += cnt      # 합계 키
             counts["total"] = counts["safe"] + counts["danger"] + counts["spam"]
             return counts
     except Exception as e:
         logger.warning("[투표] 집계 실패: %s", e)
-        return {"safe": 0, "danger": 0, "spam": 0, "unsure": 0, "total": 0}
+        return zero
