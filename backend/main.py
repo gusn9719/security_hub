@@ -34,6 +34,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from routers import analyze
+from routers import auth as auth_router
 from routers import sandbox
 from database.db_init import init_db
 from services.browse_service import shutdown_all_sessions
@@ -289,3 +290,4 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 app.include_router(analyze.router)
 app.include_router(sandbox.router)
+app.include_router(auth_router.router)
