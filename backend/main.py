@@ -14,6 +14,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 import uuid as _uuid_mod
@@ -72,13 +73,25 @@ class DeviceUUIDMiddleware(BaseHTTPMiddleware):
 
     헤더 없음  → 401 Unauthorized
     UUID 형식 오류 → 400 Bad Request
-    제외 경로: /docs, /redoc, /openapi.json, /sandbox/browse/.../novnc 포함 경로
+    제외 경로:
+      - /docs, /redoc, /openapi.json
+      - /sandbox/browse/{container_id}/novnc(/...) — KasmVNC 프록시 경로.
+        WebView 내부에서 noVNC JS·CSS·WebSocket 이 X-Device-UUID 헤더 없이
+        직접 요청을 보내므로 제외해야 한다.
+
+    P0-8 (보고서 M-4): 이전 구현 `"/novnc" in path` 는 단순 부분 일치라
+    `/api/novnc-test`, `/v2/sandbox/novnc-status` 같이 사용자 정의 경로
+    어디에든 'novnc' 가 포함되면 UUID 검증을 우회할 수 있었다. 동시에
+    보고서가 권고한 path.startswith("/sandbox/browse/") 도 너무 넓어
+    컨테이너 생성·삭제(POST/DELETE /sandbox/browse, /sandbox/browse/{id})
+    까지 우회 대상이 된다. 정규식으로 noVNC 프록시 경로 정확히 매칭.
     """
     _EXCLUDED = frozenset({"/docs", "/redoc", "/openapi.json"})
+    _NOVNC_RE = re.compile(r"^/sandbox/browse/[^/]+/novnc(?:/|$)")
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path in self._EXCLUDED or "/novnc" in path:
+        if path in self._EXCLUDED or self._NOVNC_RE.match(path):
             return await call_next(request)
 
         device_uuid = request.headers.get("X-Device-UUID")
@@ -125,14 +138,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     - POST /analyze          : 10회/분
     - POST /sandbox/browse   : 5회/분 (컨테이너 생성)
     - POST /sandbox/auto-test: 5회/분
-    - POST /sandbox/run      : 5회/분
+    - POST /sandbox/votes    : 20회/분 (P0-7, 보고서 M-3)
     초과 시 HTTP 429 + Retry-After 반환.
     """
     _LIMITS: dict[str, tuple[int, int]] = {
         "/analyze":           (10, 60),
         "/sandbox/browse":    (5,  60),
         "/sandbox/auto-test": (5,  60),
-        "/sandbox/run":       (5,  60),
+        "/sandbox/votes":     (20, 60),
     }
 
     def __init__(self, app):
@@ -167,13 +180,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key = f"{ip}:{path}"
         now = time.monotonic()
 
-        # 윈도우 밖 타임스탬프 제거
-        self._counters[key] = [t for t in self._counters[key] if now - t < window]
+        # 윈도우 밖 타임스탬프 제거.
+        # P0-7 (보고서 M-2): 윈도우 밖 타임스탬프만 비우고 빈 리스트 키를
+        # 그대로 두면 IP×endpoint 조합 수만큼 dict 키가 영구 누적된다.
+        # defaultdict 의 자동 생성 동작을 우회하기 위해 .get() 으로 읽고,
+        # 비어있으면 키를 만들지 않고 종료한다.
+        fresh = [t for t in self._counters.get(key, ()) if now - t < window]
 
-        if len(self._counters[key]) >= max_req:
+        if len(fresh) >= max_req:
             logger.warning(
                 "[RateLimit] %s %s 초과: IP=%s (%d/%d per %ds)",
-                request.method, path, ip, len(self._counters[key]), max_req, window,
+                request.method, path, ip, len(fresh), max_req, window,
             )
             return JSONResponse(
                 status_code=429,
@@ -181,7 +198,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(window)},
             )
 
-        self._counters[key].append(now)
+        fresh.append(now)
+        self._counters[key] = fresh
         return await call_next(request)
 
 

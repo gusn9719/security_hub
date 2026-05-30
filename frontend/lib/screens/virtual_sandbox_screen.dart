@@ -5,9 +5,10 @@
 //       가짜 개인정보 주입 후 피싱 폼 여부를 탐지한다.
 //
 // 변경 이력:
-//   - Sprint 7:   최초 작성 (/sandbox/run 기반)
+//   - Sprint 7:   최초 작성
 //   - Sprint 7-B: /sandbox/auto-test 연동, sandbox_score·summary·screenshots 표시,
 //                 스크린샷 탭→전체화면(InteractiveViewer 핀치줌) 추가.
+//   - P0-5:       옛 /sandbox/run 참조 주석 제거 (백엔드에서 엔드포인트 제거됨).
 // =============================================================================
 
 import 'dart:convert';

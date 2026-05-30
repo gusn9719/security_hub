@@ -86,36 +86,10 @@ class ApiService {
     }
   }
 
-  /// URL을 백엔드 Browserless 샌드박스에서 분석하고 결과를 반환한다.
-  ///
-  /// [url]: 샌드박스에서 실행할 대상 URL
-  /// 반환값: findings, screenshot_initial, screenshot_after3s 등을 담은 Map
-  /// 예외: 네트워크 오류 또는 서버 오류 시 [Exception] throw
-  static Future<Map<String, dynamic>> startSandbox(String url) async {
-    final uri = Uri.parse('$_baseUrl/sandbox/run');
-
-    try {
-      final response = await http.post(
-        uri,
-        headers: await _headers(),
-        body: jsonEncode({'url': url}),
-      ).timeout(
-        const Duration(seconds: 60),
-        onTimeout: () => throw Exception('분석이 너무 오래 걸려요. 잠시 후 다시 시도해 주세요.'),
-      );
-
-      if (response.statusCode == 200) {
-        return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-      } else {
-        throw Exception('분석 서버에 일시적인 문제가 생겼어요 (${response.statusCode})');
-      }
-    } on SocketException {
-      throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Sprint 7-B: AI 자동탐지 API (/sandbox/auto-test)
+  // P0-5: 옛 startSandbox()/POST /sandbox/run 은 호출자 없는 데드 코드 +
+  //       0.0.0.0 바인딩·하드코딩 토큰 결함이 있어 백엔드와 함께 완전 제거됨.
   // ---------------------------------------------------------------------------
 
   /// URL을 격리 컨테이너에서 AI가 자동 분석하고 결과를 반환한다.

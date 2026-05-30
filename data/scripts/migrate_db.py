@@ -177,6 +177,36 @@ def _backfill_whitelist(conn) -> tuple[int, int]:
 
 
 # =============================================================================
+# P0-4: 구버전 화이트리스트 시드 1회성 제거
+# =============================================================================
+
+def _remove_old_whitelist_seeds(conn) -> int:
+    """
+    v1.0 이전 구버전 시드(source='manual' 또는 'pattern') 행을 1회 제거한다.
+
+    원래 init_db() 안에서 매 lifespan 마다 실행되던 코드를 옮긴 것이다.
+    매 재시작마다 운영용 수동 추가 화이트리스트까지 지워질 수 있어 위험.
+    본 함수는 migrate_db.py 안에서만 호출되며, 정리할 행이 없으면 0 을
+    반환하므로 반복 실행해도 안전(idempotent).
+
+    반환값: 삭제된 행 수
+    """
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM whitelist WHERE source IN ('manual', 'pattern')"
+    ).fetchone()[0]
+    if cnt == 0:
+        logger.info("[마이그레이션] 구버전 화이트리스트 시드 없음 — 스킵")
+        return 0
+    conn.execute("DELETE FROM whitelist WHERE source IN ('manual', 'pattern')")
+    logger.info(
+        "[마이그레이션] 구버전 화이트리스트 시드 %d건 제거 — "
+        "load_whitelist_csv.py 로 재적재 필요",
+        cnt,
+    )
+    return cnt
+
+
+# =============================================================================
 # 검증
 # =============================================================================
 
@@ -215,13 +245,16 @@ def run_migration() -> None:
     logger.info("[마이그레이션] 2단계: init_db() — 스키마 갱신")
     init_db()
 
-    # 3. 역채움
+    # 3. 역채움 + 구버전 시드 정리
     with get_rw_connection() as conn:
         logger.info("[마이그레이션] 3단계: blacklist.registered_domain 역채움")
         bl_upd, bl_skip = _backfill_blacklist(conn)
 
         logger.info("[마이그레이션] 4단계: whitelist.registered_domain 역채움")
         wl_upd, wl_skip = _backfill_whitelist(conn)
+
+        logger.info("[마이그레이션] 5단계: 구버전 화이트리스트 시드 1회 제거 (P0-4)")
+        _remove_old_whitelist_seeds(conn)
 
         conn.commit()
 

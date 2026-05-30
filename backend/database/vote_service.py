@@ -28,9 +28,10 @@
 # =============================================================================
 
 import datetime
-import hashlib
 import logging
 from urllib.parse import urlparse
+
+from database.blacklist_service import compute_url_hash, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,10 @@ def save_vote(url: str, session_id: str, vote: str, device_uuid: str = "") -> bo
         return True
 
     # ── 의미 있는 투표(safe/danger/spam): DB 저장 ──────────────────────────
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
+    # url_hash 는 blacklist_service.normalize_url() 정규화 결과 + SHA256.
+    # 블랙리스트/샌드박스/분석이력 모두 동일 키를 사용해야 피드백 순환이
+    # 작동한다 (P0-1, 보고서 D-3).
+    url_hash = compute_url_hash(normalize_url(url))
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
 
     # domain / registered_domain 추출 — UNIQUE(device_uuid, registered_domain)
@@ -139,7 +143,8 @@ def get_vote_counts(url: str) -> dict:
     Returns:
         {"safe": int, "danger": int, "spam": int, "unsure": 0, "total": int}
     """
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
+    # P0-1: 블랙리스트와 동일한 정규화로 키를 만든다 (보고서 D-3).
+    url_hash = compute_url_hash(normalize_url(url))
     try:
         from database.db_init import get_ro_connection
         with get_ro_connection() as conn:
