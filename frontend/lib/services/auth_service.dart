@@ -196,7 +196,9 @@ class AuthService {
   /// 클라이언트 측 로그아웃. 백엔드는 stateless JWT 라 별도 호출 의미 없음.
   ///
   /// 카카오 SDK logout 은 실패해도 무시한다 (이미 만료된 카카오 토큰일 수
-  /// 있음). 로컬 JWT/프로필 폐기가 본질.
+  /// 있음). 로컬 JWT/프로필 폐기 + 익명 선택 플래그도 함께 초기화 — 명시적
+  /// 로그아웃은 '익명 사용 의사' 까지 철회한 것으로 본다. 다음 앱 재시작
+  /// 시 LoginScreen 이 다시 나타나 명확한 재선택 흐름 제공.
   static Future<void> logout() async {
     try {
       await UserApi.instance.logout();
@@ -204,6 +206,9 @@ class AuthService {
       debugPrint('[AuthService] 카카오 logout 실패 (무시): $e');
     }
     await clearLocalAuth();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_anonChosenKey);
+    _anonymousChosen = false;
   }
 
   /// 백엔드가 401 을 돌려보낸 경우 (만료·무효 토큰) UI 에서 호출.
