@@ -3,6 +3,7 @@ import 'package:flutter/services.dart' show SystemChrome, SystemUiOverlayStyle;
 import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart';
 
 import 'screens/home_screen.dart';
+import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
 
 // AUTH-01: 카카오 네이티브 앱 키. 빌드 시 주입.
@@ -49,7 +50,10 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         fontFamily: 'sans-serif',
       ),
-      home: const HomeScreen(),
+      // 첫 실행이면 LoginScreen, 가입자 또는 익명 선택 사용자면 HomeScreen.
+      home: AuthService.shouldShowLogin()
+          ? const LoginScreen()
+          : const HomeScreen(),
     );
   }
 }

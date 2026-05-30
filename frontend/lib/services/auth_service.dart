@@ -69,10 +69,12 @@ class AuthService {
 
   static const String _jwtKey = 'auth_jwt';
   static const String _userKey = 'auth_user';
+  static const String _anonChosenKey = 'auth_anon_chosen';
 
   // SharedPreferences 접근 비용을 줄이기 위한 메모리 캐시.
   static String? _cachedJwt;
   static AuthUser? _cachedUser;
+  static bool _anonymousChosen = false;
   static bool _loadedFromDisk = false;
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -83,6 +85,7 @@ class AuthService {
     if (_loadedFromDisk) return;
     final prefs = await SharedPreferences.getInstance();
     _cachedJwt = prefs.getString(_jwtKey);
+    _anonymousChosen = prefs.getBool(_anonChosenKey) ?? false;
     final userJson = prefs.getString(_userKey);
     if (userJson != null) {
       try {
@@ -97,6 +100,23 @@ class AuthService {
       }
     }
     _loadedFromDisk = true;
+  }
+
+  /// 로그인 화면을 띄울지 결정. 가입자거나 사용자가 익명 선택을 영구적으로
+  /// 표시한 경우 false.
+  static bool shouldShowLogin() {
+    if (isLoggedIn) return false;
+    if (_anonymousChosen) return false;
+    return true;
+  }
+
+  /// 사용자가 '지금은 익명으로 사용' 을 누른 경우 호출. 다음 실행에 또
+  /// 묻지 않도록 영속화. 로그인 메뉴에서 '카카오로 로그인' 을 누르면
+  /// 자연스럽게 가입자로 전환되므로 비가역 선택이 아님.
+  static Future<void> markAnonymous() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_anonChosenKey, true);
+    _anonymousChosen = true;
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -188,6 +208,11 @@ class AuthService {
 
   /// 백엔드가 401 을 돌려보낸 경우 (만료·무효 토큰) UI 에서 호출.
   /// 카카오 SDK 호출 없이 로컬 토큰만 비운다.
+  ///
+  /// 익명 선택 플래그(anonymous_chosen) 는 의도적으로 유지한다. 만료 토큰
+  /// 으로 익명 모드 전환되었을 때 다시 LoginScreen 으로 강제 이동하면
+  /// 사용자가 작업 중인 흐름이 끊긴다. 가입자 기능을 다시 쓰고 싶을 때
+  /// 명시적으로 로그인 메뉴를 누르도록 안내.
   static Future<void> clearLocalAuth() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_jwtKey);

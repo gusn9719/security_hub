@@ -35,6 +35,11 @@ class ApiService {
   static const String _uuidKey = 'device_uuid';
   static String? _cachedUuid;
 
+  /// 같은 device_uuid 를 다른 서비스(예: AuthService 의 로그인 흐름)에서도
+  /// 부착해야 하므로 public wrapper 를 둔다. 헤더 부착 책임은 본 모듈에 모이지만,
+  /// 직접 호출이 필요한 외부 흐름에 안전한 인터페이스 노출용.
+  static Future<String> deviceUuid() => _getOrCreateDeviceUUID();
+
   /// SharedPreferences에 저장된 device_uuid를 반환한다.
   /// 없으면 UUID v4를 생성 후 저장한다. 앱 재설치 전까지 동일 UUID 유지.
   static Future<String> _getOrCreateDeviceUUID() async {
