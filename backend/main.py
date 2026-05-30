@@ -125,14 +125,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     - POST /analyze          : 10회/분
     - POST /sandbox/browse   : 5회/분 (컨테이너 생성)
     - POST /sandbox/auto-test: 5회/분
-    - POST /sandbox/run      : 5회/분
     초과 시 HTTP 429 + Retry-After 반환.
     """
     _LIMITS: dict[str, tuple[int, int]] = {
         "/analyze":           (10, 60),
         "/sandbox/browse":    (5,  60),
         "/sandbox/auto-test": (5,  60),
-        "/sandbox/run":       (5,  60),
     }
 
     def __init__(self, app):

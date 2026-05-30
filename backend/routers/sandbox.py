@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from services.sandbox_service import run_sandbox_auto, run_auto_test
+from services.sandbox_service import run_auto_test
 from services import browse_service
 from services.browse_service import create_browse_session, terminate_browse_session
 from schemas.analysis import SandboxAutoTestRequest, SandboxAutoTestResponse, VoteRequest, VoteResponse
@@ -31,11 +31,6 @@ router = APIRouter(prefix="/sandbox", tags=["sandbox"])
 # 초과 요청은 대기 없이 즉시 503으로 거부한다 (_value 체크 후 HTTPException).
 _BROWSE_SEM = asyncio.Semaphore(4)   # 7-A 직접 탐방: 최대 4세션
 _AUTO_SEM   = asyncio.Semaphore(3)   # 7-B AI 자동테스트: 최대 3세션
-
-
-class SandboxRequest(BaseModel):
-    """샌드박스 분석 요청 모델."""
-    url: str
 
 
 class BrowseCreateRequest(BaseModel):
@@ -100,23 +95,6 @@ async def submit_vote(http_request: Request, request: VoteRequest) -> VoteRespon
         logger.info("[/sandbox/votes] 저장 완료: session_id=%s", request.session_id)
         return VoteResponse(success=True, message="투표가 저장되었습니다.")
     return VoteResponse(success=False, message="이미 투표하셨거나 저장에 실패했습니다.")
-
-
-@router.post("/run")
-async def run_sandbox(request: SandboxRequest) -> dict:
-    """
-    URL을 격리된 Browserless 컨테이너에서 실행하고 탐지 결과를 반환한다.
-
-    Args:
-        request: SandboxRequest — 분석할 URL
-
-    Returns:
-        dict: findings(탐지 목록), screenshot_initial, screenshot_after3s, error
-    """
-    logger.info("[/sandbox/run] 요청: %s", request.url)
-    result = await run_sandbox_auto(request.url)
-    logger.info("[/sandbox/run] 완료. findings=%d건", len(result.get("findings", [])))
-    return result
 
 
 @router.post("/browse")
