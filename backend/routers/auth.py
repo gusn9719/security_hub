@@ -9,6 +9,7 @@
 #                       JWT 를 SharedPreferences 에서 지우면 끝.
 # =============================================================================
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -41,19 +42,23 @@ async def login_with_kakao(req: KakaoLoginRequest) -> AuthTokenResponse:
             detail="카카오 토큰이 유효하지 않습니다.",
         ) from e
 
-    user_id = user_service.upsert_by_kakao_id(
+    # sqlite3 는 동기 I/O. async 라우터에서 직접 호출하면 이벤트 루프가
+    # 막혀 다른 요청까지 지연된다 (P0-3 와 동일 패턴). asyncio.to_thread 로
+    # 워커 스레드에 위임.
+    user_id = await asyncio.to_thread(
+        user_service.upsert_by_kakao_id,
         kakao_id=kakao_user["kakao_id"],
         nickname=kakao_user.get("nickname"),
         email=kakao_user.get("email"),
     )
     if user_id is None:
-        logger.warning("[auth] DB upsert 실패 — kakao_id=%s", kakao_user["kakao_id"])
+        logger.warning("[auth] DB upsert 실패")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="사용자 정보를 저장하지 못했습니다.",
         )
 
-    profile = user_service.get_by_id(user_id)
+    profile = await asyncio.to_thread(user_service.get_by_id, user_id)
     if profile is None:
         # upsert 직후 조회 실패 — 거의 발생하지 않지만 방어.
         raise HTTPException(
@@ -94,7 +99,7 @@ async def get_me(request: Request) -> MeResponse:
             detail=str(e),
         ) from e
 
-    profile = user_service.get_by_id(user_id)
+    profile = await asyncio.to_thread(user_service.get_by_id, user_id)
     if profile is None:
         # JWT 는 유효하지만 사용자가 DB 에서 사라진 경우 (예: 탈퇴 후 재발급
         # 토큰을 가진 클라이언트). 401 로 응답해 클라이언트가 토큰 폐기.
