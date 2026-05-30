@@ -14,6 +14,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 import uuid as _uuid_mod
@@ -72,13 +73,25 @@ class DeviceUUIDMiddleware(BaseHTTPMiddleware):
 
     헤더 없음  → 401 Unauthorized
     UUID 형식 오류 → 400 Bad Request
-    제외 경로: /docs, /redoc, /openapi.json, /sandbox/browse/.../novnc 포함 경로
+    제외 경로:
+      - /docs, /redoc, /openapi.json
+      - /sandbox/browse/{container_id}/novnc(/...) — KasmVNC 프록시 경로.
+        WebView 내부에서 noVNC JS·CSS·WebSocket 이 X-Device-UUID 헤더 없이
+        직접 요청을 보내므로 제외해야 한다.
+
+    P0-8 (보고서 M-4): 이전 구현 `"/novnc" in path` 는 단순 부분 일치라
+    `/api/novnc-test`, `/v2/sandbox/novnc-status` 같이 사용자 정의 경로
+    어디에든 'novnc' 가 포함되면 UUID 검증을 우회할 수 있었다. 동시에
+    보고서가 권고한 path.startswith("/sandbox/browse/") 도 너무 넓어
+    컨테이너 생성·삭제(POST/DELETE /sandbox/browse, /sandbox/browse/{id})
+    까지 우회 대상이 된다. 정규식으로 noVNC 프록시 경로 정확히 매칭.
     """
     _EXCLUDED = frozenset({"/docs", "/redoc", "/openapi.json"})
+    _NOVNC_RE = re.compile(r"^/sandbox/browse/[^/]+/novnc(?:/|$)")
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path in self._EXCLUDED or "/novnc" in path:
+        if path in self._EXCLUDED or self._NOVNC_RE.match(path):
             return await call_next(request)
 
         device_uuid = request.headers.get("X-Device-UUID")
