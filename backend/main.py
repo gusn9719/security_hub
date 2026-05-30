@@ -37,6 +37,7 @@ from routers import analyze
 from routers import auth as auth_router
 from routers import sandbox
 from database.db_init import init_db
+from services import jwt_service
 from services.browse_service import shutdown_all_sessions
 from services.reputation_cache_service import purge_expired
 
@@ -107,6 +108,59 @@ class DeviceUUIDMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=400,
                 content={"detail": "X-Device-UUID 형식이 올바르지 않습니다 (UUID v4 필요)."},
+            )
+        return await call_next(request)
+
+
+class OptionalAuthMiddleware(BaseHTTPMiddleware):
+    """
+    AUTH-01 (Phase 3): Authorization: Bearer <jwt> 헤더가 있으면 검증하고
+    request.state.user_id 에 user_id 를 채운다. 없으면 익명으로 통과.
+
+    설계 결정:
+    - **없으면 통과**: 익명 사용자도 모든 엔드포인트(분석/샌드박스/투표) 접근.
+      device_uuid 만 필수 (NF-30 / DeviceUUIDMiddleware).
+    - **무효 토큰은 401**: 만료/서명 깨진 토큰을 silent pass-through 로
+      익명 취급하면 (1) 클라이언트가 stale 토큰 들고 계속 익명 가중치로
+      서비스를 받고 (2) 서버가 재로그인 흐름을 유도할 길이 없다.
+      JSON 으로 401 + 에러 메시지 반환 → 클라이언트가 토큰 폐기.
+    - **state.user_id 만 신뢰**: 다운스트림 라우터/헬퍼는 request.state 만
+      읽어야 한다. 헤더에서 직접 user_id 를 재파싱하면 본 미들웨어 우회 경로가
+      생긴다. routers.auth.get_optional_user_id 가 이 인터페이스를 강제.
+
+    예외 경로:
+    - noVNC 프록시 (/sandbox/browse/{id}/novnc) — KasmVNC JS 가 자체 헤더를
+      못 붙임. DeviceUUID 미들웨어와 같은 이유.
+    """
+    _NOVNC_RE = re.compile(r"^/sandbox/browse/[^/]+/novnc(?:/|$)")
+
+    async def dispatch(self, request: Request, call_next):
+        # 기본값 — 라우터/헬퍼가 항상 .state.user_id 를 안전하게 읽을 수 있도록.
+        request.state.user_id = None
+
+        if self._NOVNC_RE.match(request.url.path):
+            return await call_next(request)
+
+        auth = request.headers.get("Authorization") or request.headers.get("authorization")
+        if not auth:
+            return await call_next(request)
+
+        # Bearer 형식이 아닌 Authorization 헤더 (Basic 등) 는 본 앱이 지원
+        # 하지 않는다. 명시적으로 401 — silent 무시는 보안 안티 패턴.
+        if not auth.lower().startswith("bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authorization 은 Bearer 형식이어야 합니다."},
+            )
+
+        token = auth.split(" ", 1)[1].strip()
+        try:
+            request.state.user_id = jwt_service.decode_token(token)
+        except jwt_service.JWTError as e:
+            # 만료·서명오류·sub 누락 모두 클라이언트에게 알려 토큰 폐기 유도.
+            return JSONResponse(
+                status_code=401,
+                content={"detail": str(e)},
             )
         return await call_next(request)
 
@@ -249,21 +303,26 @@ app = FastAPI(
 )
 
 # ── 미들웨어 등록 순서 (Starlette: add_middleware는 맨 앞에 삽입 → 나중 등록이 바깥) ──
-# 실제 요청 처리 순서: CORS → Security → RateLimit → DeviceUUID → Block → handler
+# 실제 요청 처리 순서:
+#   CORS → Security → RateLimit → DeviceUUID → OptionalAuth → Block → handler
 #
 # 1. 위험 메서드 차단 (가장 안쪽 — handler 직전에 실행)
 app.add_middleware(BlockDangerousMethodsMiddleware)
 
-# 2. NF-30: 기기 UUID 검증 (없으면 401, 잘못된 형식이면 400)
+# 2. AUTH-01: Authorization Bearer 토큰이 있으면 검증해 request.state.user_id
+#    에 채운다. 없으면 익명 통과. 무효 토큰은 401.
+app.add_middleware(OptionalAuthMiddleware)
+
+# 3. NF-30: 기기 UUID 검증 (없으면 401, 잘못된 형식이면 400)
 app.add_middleware(DeviceUUIDMiddleware)
 
-# 3. NF-24: IP 기반 요청 속도 제한
+# 4. NF-24: IP 기반 요청 속도 제한
 app.add_middleware(RateLimitMiddleware)
 
-# 4. 보안 헤더 (모든 응답에 추가)
+# 5. 보안 헤더 (모든 응답에 추가)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 5. CORS (OPTIONS preflight를 가장 먼저 처리 — 바깥)
+# 6. CORS (OPTIONS preflight를 가장 먼저 처리 — 바깥)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
