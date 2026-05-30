@@ -105,6 +105,10 @@ def init_db() -> None:
         # ── URL 투표 테이블 ──────────────────────────────────────────────
         # 사용자 피드백 (안전/위험) 수집용. DC-30: vote 값 'danger'로 통일.
         # UNIQUE(device_uuid, registered_domain): 기기당 도메인 1회 투표 제한.
+        # user_id (AUTH/Phase 2): 카카오 가입자 식별. NULL = 익명 표.
+        # FK 미설정 — SQLite 의 PRAGMA foreign_keys 가 기본 OFF 인 본 앱
+        # 환경에선 의미가 없고, users 삭제 흐름이 졸업작품 범위 밖이라 ON 으로
+        # 켤 이유도 없다.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS url_votes (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,7 +119,8 @@ def init_db() -> None:
                 session_id        TEXT,
                 device_uuid       TEXT    NOT NULL DEFAULT '',
                 domain            TEXT    NOT NULL DEFAULT '',
-                registered_domain TEXT
+                registered_domain TEXT,
+                user_id           INTEGER
             )
         """)
         conn.execute("""
@@ -246,6 +251,15 @@ def init_db() -> None:
             if col not in wl_cols:
                 conn.execute(f"ALTER TABLE whitelist ADD COLUMN {col} {definition}")
                 logger.info(f"[DB] whitelist.{col} 컬럼 추가 완료")
+
+        # (3) url_votes.user_id (AUTH/Phase 2)
+        # 가입자/익명 표를 분리해 휴리스틱 시그널에서 가입자 표에 더 큰 권위를
+        # 부여하기 위함. NULL = 익명 표. 기존 행은 모두 NULL 로 남아 익명으로
+        # 분류된다 — 의도된 동작 (가입 기능 도입 전 표는 익명).
+        uv_cols = {r[1] for r in conn.execute("PRAGMA table_info(url_votes)").fetchall()}
+        if "user_id" not in uv_cols:
+            conn.execute("ALTER TABLE url_votes ADD COLUMN user_id INTEGER")
+            logger.info("[DB] url_votes.user_id 컬럼 추가 완료")
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_whitelist_registered_domain
