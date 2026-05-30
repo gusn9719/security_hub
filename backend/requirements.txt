@@ -50,3 +50,4 @@ docker
 playwright
 python-whois==0.9.5
 tldextract==5.1.2
+pyjwt==2.13.0
