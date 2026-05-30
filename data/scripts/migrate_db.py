@@ -212,7 +212,7 @@ def _remove_old_whitelist_seeds(conn) -> int:
 
 def _verify_schema(conn) -> None:
     """PRAGMA table_info로 변경된 테이블 컬럼을 출력해 검증한다."""
-    targets = ["sandbox_results", "url_votes", "analysis_history"]
+    targets = ["sandbox_results", "url_votes", "analysis_history", "users"]
     logger.info("=" * 60)
     logger.info("[검증] 테이블 스키마 확인")
     for table in targets:

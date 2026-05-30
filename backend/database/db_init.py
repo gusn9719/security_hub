@@ -199,6 +199,26 @@ def init_db() -> None:
             ON analysis_history (url_hash)
         """)
 
+        # ── 사용자 테이블 (AUTH-01) ──────────────────────────────────────
+        # 카카오 소셜 로그인으로 발급되는 자연인 1:1 보장 계정.
+        # device_uuid(NF-30) 가 익명 식별이라면, users 는 인증된 신원이다.
+        # kakao_id 는 카카오 회원 고유번호(숫자) 문자열로 저장 — UNIQUE.
+        # 이메일은 카카오 선택 동의이므로 nullable.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                kakao_id        TEXT    NOT NULL UNIQUE,
+                nickname        TEXT,
+                email           TEXT,
+                created_at      TEXT    NOT NULL,
+                last_login_at   TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_users_kakao_id
+            ON users (kakao_id)
+        """)
+
         # ── migration: 기존 테이블에 누락 컬럼 추가 ─────────────────────
         # 주의: registered_domain 인덱스는 컬럼 존재 확인 후 생성해야 한다.
         # CREATE INDEX IF NOT EXISTS 는 인덱스명 충돌만 무시하고,
