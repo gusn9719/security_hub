@@ -140,6 +140,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     - POST /sandbox/browse   : 5회/분 (컨테이너 생성)
     - POST /sandbox/auto-test: 5회/분
     - POST /sandbox/votes    : 20회/분 (P0-7, 보고서 M-3)
+    - POST /auth/kakao       : 5회/분 (AUTH-01) — 카카오 API 무차별 호출
+                                                    채널화 방지. 자연인은
+                                                    분당 5 회 로그인하지
+                                                    않는다.
     초과 시 HTTP 429 + Retry-After 반환.
     """
     _LIMITS: dict[str, tuple[int, int]] = {
@@ -147,6 +151,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         "/sandbox/browse":    (5,  60),
         "/sandbox/auto-test": (5,  60),
         "/sandbox/votes":     (20, 60),
+        "/auth/kakao":        (5,  60),
     }
 
     def __init__(self, app):
