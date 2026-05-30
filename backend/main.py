@@ -21,6 +21,13 @@ import uuid as _uuid_mod
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
+# .env 를 다른 모듈이 import 되기 전 가장 먼저 로드한다.
+# gemini_service.py 내부의 load_dotenv() 가 호출되는 시점은 import 순서에
+# 따라 달라지므로 운에 의존하게 된다. JWT_SECRET 같이 모듈 함수 호출 시점에
+# 환경변수가 반드시 있어야 하는 케이스는 여기서 한 번 확실히 로드.
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv()
+
 # Windows의 ProactorEventLoop은 asyncio SSL 연결에서 실제 SSL 오류를
 # ConnectionRefusedError로 잘못 변환하는 버그가 있다.
 # SelectorEventLoop으로 전환해 SSL 연결이 정상 작동하도록 한다.
