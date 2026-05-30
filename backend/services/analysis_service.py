@@ -138,9 +138,15 @@ class AnalysisService:
 
         # ── 2단계: 단축 URL 해제 ──────────────────────────────────────────
         # 최대 3-hop 추적, SSRF 방어(사설 IP 차단), 실패 시 원본 유지
+        # P0-3 (보고서 D-2): expand_url 은 requests.head() 동기 I/O (hop 당
+        # 최대 5초). asyncio.to_thread 로 분리하지 않으면 단축 URL 1건만으로
+        # 이벤트 루프가 최대 15초 점유 → 다른 모든 요청 마비.
         expanded_urls: list[str] = []
         for url in raw_urls:
-            expanded = expand_url(url) if is_short_url(url) else url
+            if is_short_url(url):
+                expanded = await asyncio.to_thread(expand_url, url)
+            else:
+                expanded = url
             expanded_urls.append(expanded)
 
         # 대표 URL과 등록 도메인 — 이후 모든 단계에서 공유
@@ -148,8 +154,9 @@ class AnalysisService:
         registered = get_registered_domain(primary_url)
 
         # ── 3단계: 블랙리스트 매칭 ────────────────────────────────────────
+        # P0-3: SQLite I/O 도 동기 — to_thread 로 분리.
         try:
-            hit = check_blacklist(expanded_urls)
+            hit = await asyncio.to_thread(check_blacklist, expanded_urls)
         except Exception as e:
             logger.error("[블랙리스트] 조회 오류 — %s", e)
             hit = None
@@ -177,14 +184,16 @@ class AnalysisService:
         # (open_redirect 없이) 히트할 때만 허용. 하나라도 미히트면 DC-06 에
         # 따라 SUSPICIOUS 분기로 떨어진다 (3단계에서 블랙리스트는 이미 전수
         # 검사 완료 상태).
-        wl = whitelist_service.is_whitelisted(primary_url)
+        # P0-3: 화이트리스트는 매 요청마다 전수 fetchall + 파이썬 루프(H-1) →
+        # 동기 I/O. to_thread 로 분리.
+        wl = await asyncio.to_thread(whitelist_service.is_whitelisted, primary_url)
 
         if wl.hit and not wl.open_redirect:
             # 다른 URL 도 모두 화이트리스트 히트인지 확인
             other_urls = expanded_urls[1:]
             non_whitelisted: list[str] = []
             for ou in other_urls:
-                ou_wl = whitelist_service.is_whitelisted(ou)
+                ou_wl = await asyncio.to_thread(whitelist_service.is_whitelisted, ou)
                 if not (ou_wl.hit and not ou_wl.open_redirect):
                     non_whitelisted.append(ou)
 
@@ -214,7 +223,7 @@ class AnalysisService:
             )
             primary_url = non_whitelisted[0]
             registered = get_registered_domain(primary_url)
-            wl = whitelist_service.is_whitelisted(primary_url)
+            wl = await asyncio.to_thread(whitelist_service.is_whitelisted, primary_url)
 
         if wl.hit and wl.open_redirect:
             logger.warning(
@@ -262,8 +271,9 @@ class AnalysisService:
                 domain_evidence = None
 
         # ── 7단계 직전: 사용자 투표 이력 조회 ────────────────────────────
+        # P0-3: SQLite I/O — to_thread 로 분리.
         try:
-            vote_counts = get_vote_counts(primary_url)
+            vote_counts = await asyncio.to_thread(get_vote_counts, primary_url)
         except Exception as e:
             logger.warning("[파이프라인] 투표 조회 실패 (무시): %s", e)
             vote_counts = None
