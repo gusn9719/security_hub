@@ -25,10 +25,11 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import datetime
-import hashlib
 import json
 import socket
 import time
+
+from database.blacklist_service import compute_url_hash, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,8 @@ def get_latest_sandbox_score(url: str) -> int | None:
     Returns:
         sandbox_score (0~100) 또는 None
     """
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
+    # P0-1: 블랙리스트와 동일한 정규화로 키를 만든다 (보고서 D-3).
+    url_hash = compute_url_hash(normalize_url(url))
     try:
         from database.db_init import get_ro_connection
         with get_ro_connection() as conn:
@@ -896,7 +898,8 @@ async def run_auto_test(url: str) -> dict:
         dict: session_id, url, sandbox_score, findings, summary,
               screenshots, final_url, redirect_count, error, cached
     """
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
+    # P0-1: 블랙리스트와 동일한 정규화로 키를 만든다 (보고서 D-3).
+    url_hash = compute_url_hash(normalize_url(url))
     session_id = uuid4().hex
 
     # 1. 24h 캐시 확인

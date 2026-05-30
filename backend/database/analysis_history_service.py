@@ -6,9 +6,10 @@
 # =============================================================================
 
 import datetime
-import hashlib
 import json
 import logging
+
+from database.blacklist_service import compute_url_hash, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ def save_analysis_history(
     try:
         from database.db_init import get_rw_connection
 
-        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        # P0-1: 블랙리스트와 동일한 정규화로 키를 만든다 (보고서 D-3).
+        url_hash = compute_url_hash(normalize_url(url))
         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
         signals_json = json.dumps(triggered_signals or {}, ensure_ascii=False)
 
