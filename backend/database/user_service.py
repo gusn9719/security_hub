@@ -21,6 +21,17 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
 
 
+def _mask_kakao_id(kakao_id: str) -> str:
+    """
+    운영 로그에 카카오 회원 고유번호 평문이 누적되지 않도록 마스킹.
+    예: '1234567890' → '1234******' (앞 4 자 + 별표 6 자)
+    내부 식별은 users.id 로 충분하므로 디버깅 손실은 없다.
+    """
+    if not kakao_id or len(kakao_id) <= 4:
+        return "****"
+    return kakao_id[:4] + "*" * (len(kakao_id) - 4)
+
+
 def upsert_by_kakao_id(
     kakao_id: str,
     nickname: str | None = None,
@@ -46,6 +57,7 @@ def upsert_by_kakao_id(
     if not kakao_id:
         logger.warning("[user] upsert: kakao_id 비어있음")
         return None
+    # kakao_id 평문은 로그에 남기지 않는다 — 아래 로그 호출은 _mask_kakao_id 사용.
 
     now = _now_iso()
     try:
@@ -65,21 +77,32 @@ def upsert_by_kakao_id(
                     (kakao_id, nickname, email, now, now),
                 )
                 user_id = cursor.lastrowid
-                logger.info("[user] 신규 가입 — id=%s kakao_id=%s", user_id, kakao_id)
+                logger.info(
+                    "[user] 신규 가입 — id=%s kakao_id=%s",
+                    user_id, _mask_kakao_id(kakao_id),
+                )
                 return user_id
 
             user_id = row["id"]
+            # email 은 카카오 응답을 직접 반영한다 (COALESCE 미사용).
+            # 사용자가 첫 로그인에 동의했다가 나중에 이메일 동의를 철회하면
+            # 카카오는 None 을 돌려주는데, 이때 우리 DB 에 옛 값을 유지하면
+            # 동의 철회를 무시하는 셈이 된다. 닉네임은 필수 동의라 항상
+            # 값이 오므로 COALESCE 유지.
             conn.execute(
                 """
                 UPDATE users
                    SET nickname      = COALESCE(?, nickname),
-                       email         = COALESCE(?, email),
+                       email         = ?,
                        last_login_at = ?
                  WHERE id = ?
                 """,
                 (nickname, email, now, user_id),
             )
-            logger.info("[user] 재로그인 — id=%s kakao_id=%s", user_id, kakao_id)
+            logger.info(
+                "[user] 재로그인 — id=%s kakao_id=%s",
+                user_id, _mask_kakao_id(kakao_id),
+            )
             return user_id
     except sqlite3.Error as e:
         logger.warning("[user] upsert 실패: %s", e)

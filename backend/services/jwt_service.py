@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 _JWT_ALG_DEFAULT = "HS256"
 _JWT_EXPIRE_HOURS_DEFAULT = 720  # 30 days
+# HS256 시크릿 권장 길이 — RFC 7518 §3.2 는 키가 해시 출력 크기 이상
+# (HS256=256bit=32byte) 이어야 한다고 명시. 'openssl rand -hex 32' 는
+# 64 자 hex (= 32 byte) 를 만든다.
+_JWT_SECRET_MIN_LEN = 32
 
 
 class JWTError(Exception):
@@ -30,13 +34,21 @@ def _secret() -> str:
     JWT 서명용 시크릿을 환경에서 읽는다.
 
     미설정이면 ValueError — 운영에서 약한 기본값으로 토큰 발급되는 사고를
-    원천 차단한다. 테스트는 monkeypatch 로 환경변수를 주입한다.
+    원천 차단한다. 길이가 32 자(= 256bit hex) 미만이어도 ValueError 로
+    거부한다. HS256 의 RFC 7518 §3.2 보안 권고에 따른 것이며, 'password'
+    같은 약한 시크릿이 실수로 설정되는 사고도 같이 막는다.
+    테스트는 monkeypatch 로 환경변수를 주입한다.
     """
     secret = os.environ.get("JWT_SECRET")
     if not secret:
         raise ValueError(
             "JWT_SECRET 환경변수가 설정되지 않았습니다. "
             "backend/.env 에 'openssl rand -hex 32' 결과를 등록하세요."
+        )
+    if len(secret) < _JWT_SECRET_MIN_LEN:
+        raise ValueError(
+            f"JWT_SECRET 이 너무 짧습니다 (현재 {len(secret)} 자, 최소 "
+            f"{_JWT_SECRET_MIN_LEN} 자 필요). 'openssl rand -hex 32' 로 재생성하세요."
         )
     return secret
 
