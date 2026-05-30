@@ -233,14 +233,8 @@ def init_db() -> None:
             ON whitelist (registered_domain)
         """)
 
-        # 구버전 시드(15건, match_mode 없음)가 남아있으면 제거
-        old_seed_count = conn.execute(
-            "SELECT COUNT(*) FROM whitelist WHERE source = 'manual' OR source = 'pattern'"
-        ).fetchone()[0]
-        if old_seed_count > 0:
-            conn.execute(
-                "DELETE FROM whitelist WHERE source IN ('manual', 'pattern')"
-            )
-            logger.info(f"[DB] 구버전 시드 {old_seed_count}건 제거 완료 — CSV 로더로 재적재 필요")
+        # P0-4 (보고서 H-3): 구버전 시드 제거 로직은 매 lifespan 재시작 시
+        # 실행되어 운영 화이트리스트(source='manual')까지 지우던 위험이 있었다.
+        # 1회성 정리이므로 migrate_db.py 로 이동.
 
     logger.info(f"[DB] 초기화 완료 — {DB_PATH}")
