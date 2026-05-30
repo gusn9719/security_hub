@@ -125,12 +125,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     - POST /analyze          : 10회/분
     - POST /sandbox/browse   : 5회/분 (컨테이너 생성)
     - POST /sandbox/auto-test: 5회/분
+    - POST /sandbox/votes    : 20회/분 (P0-7, 보고서 M-3)
     초과 시 HTTP 429 + Retry-After 반환.
     """
     _LIMITS: dict[str, tuple[int, int]] = {
         "/analyze":           (10, 60),
         "/sandbox/browse":    (5,  60),
         "/sandbox/auto-test": (5,  60),
+        "/sandbox/votes":     (20, 60),
     }
 
     def __init__(self, app):
@@ -165,13 +167,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key = f"{ip}:{path}"
         now = time.monotonic()
 
-        # 윈도우 밖 타임스탬프 제거
-        self._counters[key] = [t for t in self._counters[key] if now - t < window]
+        # 윈도우 밖 타임스탬프 제거.
+        # P0-7 (보고서 M-2): 윈도우 밖 타임스탬프만 비우고 빈 리스트 키를
+        # 그대로 두면 IP×endpoint 조합 수만큼 dict 키가 영구 누적된다.
+        # defaultdict 의 자동 생성 동작을 우회하기 위해 .get() 으로 읽고,
+        # 비어있으면 키를 만들지 않고 종료한다.
+        fresh = [t for t in self._counters.get(key, ()) if now - t < window]
 
-        if len(self._counters[key]) >= max_req:
+        if len(fresh) >= max_req:
             logger.warning(
                 "[RateLimit] %s %s 초과: IP=%s (%d/%d per %ds)",
-                request.method, path, ip, len(self._counters[key]), max_req, window,
+                request.method, path, ip, len(fresh), max_req, window,
             )
             return JSONResponse(
                 status_code=429,
@@ -179,7 +185,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(window)},
             )
 
-        self._counters[key].append(now)
+        fresh.append(now)
+        self._counters[key] = fresh
         return await call_next(request)
 
 
