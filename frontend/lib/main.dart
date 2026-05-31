@@ -6,13 +6,15 @@ import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
 
-// AUTH-01: 카카오 네이티브 앱 키. 빌드 시 주입.
-//   flutter run --dart-define=KAKAO_NATIVE_KEY=xxxxx \
-//               --dart-define=API_BASE_URL=https://...
-// 미설정 시 빈 문자열 — 앱은 익명 모드로만 동작하고 카카오 로그인은 SDK
-// 단에서 실패한다 (login_screen 의 catch 가 사용자에게 안내).
-const String _kakaoNativeKey =
-    String.fromEnvironment('KAKAO_NATIVE_KEY', defaultValue: '');
+// AUTH-01: 카카오 네이티브 앱 키.
+// 졸업작품 시연 단순화를 위해 default 에 키를 박는다. build.gradle.kts 의
+// manifestPlaceholder 와 동일 가치 — APK 디컴파일하면 어차피 노출되는 값.
+// public git 푸시만 주의. 다른 키로 빌드하려면 --dart-define=KAKAO_NATIVE_KEY=...
+// 로 오버라이드.
+const String _kakaoNativeKey = String.fromEnvironment(
+  'KAKAO_NATIVE_KEY',
+  defaultValue: '50f09a9edb8273c2690a09f0f5d18c65',
+);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
