@@ -18,18 +18,15 @@ class ApiService {
   // -------------------------------------------------------------------------
   // 서버 주소 상수
   // 빌드/실행 시 --dart-define=API_BASE_URL=https://... 로 주입한다.
-  // 미설정 시 Android 에뮬레이터 기본값(http://10.0.2.2:8000) 사용.
   //
-  // 로컬 에뮬레이터:
+  // 로컬 에뮬레이터 (기본값):
   //   flutter run
-  // Cloudflare Tunnel / 실서버:
-  //   flutter run --dart-define=API_BASE_URL=https://your-tunnel.trycloudflare.com
-  //   flutter build apk --dart-define=API_BASE_URL=https://your-tunnel.trycloudflare.com
+  // 프로덕션 APK:
+  //   flutter build apk --dart-define=API_BASE_URL=https://api.securityhubserver.cloud
   // -------------------------------------------------------------------------
   static const String _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
     defaultValue: 'http://10.0.2.2:8000',
-    // defaultValue: 'http://172.31.57.14:8000',
   );
 
   static const String _uuidKey = 'device_uuid';
@@ -89,6 +86,7 @@ class ApiService {
   /// 예외: 네트워크 오류 또는 서버 오류 시 [Exception] throw
   static Future<AnalysisResult> analyzeText(String text) async {
     final uri = Uri.parse('$_baseUrl/analyze');
+    debugPrint('[ApiService] POST $uri');
 
     try {
       final response = await http.post(
@@ -107,8 +105,15 @@ class ApiService {
         await _handleAuthExpiry(response);
         throw Exception('분석 서버 오류 (${response.statusCode})');
       }
-    } on SocketException {
+    } on SocketException catch (e) {
+      debugPrint('[ApiService] SocketException: $e');
       throw Exception('서버에 연결할 수 없습니다. 네트워크 연결을 확인해 주세요.');
+    } on HandshakeException catch (e) {
+      debugPrint('[ApiService] SSL HandshakeException: $e');
+      throw Exception('SSL 연결 오류가 발생했습니다. ($e)');
+    } catch (e) {
+      debugPrint('[ApiService] 알 수 없는 오류: ${e.runtimeType} $e');
+      rethrow;
     }
   }
 
