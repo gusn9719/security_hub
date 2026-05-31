@@ -12,7 +12,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show PlatformException;
 
-import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import 'home_screen.dart';
 
@@ -30,8 +29,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (_isLoading) return;
     setState(() => _isLoading = true);
     try {
-      final deviceUuid = await ApiService.deviceUuid();
-      await AuthService.loginWithKakao(deviceUuid: deviceUuid);
+      await AuthService.loginWithKakao();
       if (!mounted) return;
       _goToHome();
     } on PlatformException catch (e) {

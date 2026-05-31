@@ -22,6 +22,8 @@ import 'package:http/http.dart' as http;
 import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'api_service.dart';
+
 /// 가입자 프로필 — 백엔드 /auth/me 응답과 1:1.
 @immutable
 class AuthUser {
@@ -137,10 +139,15 @@ class AuthService {
   /// 카카오톡 앱이 설치돼 있으면 talk login (앱 전환), 없으면 web login
   /// (Custom Tab). SDK 가 자동 분기한다.
   ///
+  /// device_uuid 는 본 메서드가 직접 ApiService.deviceUuid() 로 조달한다.
+  /// 호출자가 인자로 넘기는 책임을 분산시키면 누락 시 백엔드의
+  /// DeviceUUIDMiddleware 가 401 로 잘라내는데, 원인 추적이 어렵다.
+  /// (Phase 4 까지는 호출자 책임이었으나 P0 코드 인스펙션에서 내부화)
+  ///
   /// 예외:
   ///   - PlatformException(code=CANCELED): 사용자가 로그인 화면 닫음.
   ///   - Exception: 카카오 SDK 또는 백엔드 통신 실패.
-  static Future<AuthUser> loginWithKakao({String? deviceUuid}) async {
+  static Future<AuthUser> loginWithKakao() async {
     // 1. 카카오 OAuthToken 획득. talk → web 폴백.
     //
     // 사용자가 talk login 화면에서 '취소' 를 누른 경우 PlatformException
@@ -168,10 +175,13 @@ class AuthService {
     }
 
     // 2. 백엔드와 교환 — kakao access_token 을 서버가 직접 검증해야 신뢰됨.
+    //    device_uuid 는 ApiService 가 발급/캐시하므로 직접 조달.
+    //    DeviceUUIDMiddleware (NF-30) 가 헤더 누락 시 401 차단.
+    final deviceUuid = await ApiService.deviceUuid();
     final uri = Uri.parse('$_baseUrl/auth/kakao');
     final headers = <String, String>{
       'Content-Type': 'application/json; charset=utf-8',
-      if (deviceUuid != null) 'X-Device-UUID': deviceUuid,
+      'X-Device-UUID': deviceUuid,
     };
     final body = jsonEncode({'access_token': token.accessToken});
 
