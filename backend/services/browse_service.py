@@ -1,6 +1,6 @@
 # =============================================================================
 # backend/services/browse_service.py
-# 역할: kasmweb/chromium 컨테이너를 생성해 KasmVNC로 격리 Chromium 화면을 스트리밍한다.
+# 역할: kasmweb/chromium 컨테이너를 관리해 KasmVNC로 격리 Chromium 화면을 스트리밍한다.
 #       Flutter WebView는 noVNC URL을 로드해 사용자가 원격 조종하는 직접 탐방 모드를 제공.
 #
 # [아키텍처: HTTP-aware SSL-strip 프록시]
@@ -13,6 +13,12 @@
 #            - 첫 HTTP 요청 헤더에 Authorization: Basic kasm_user:VNC_PW 주입
 #            - 이후 순수 TCP 릴레이 (WebSocket upgrade 포함)
 #          → https://127.0.0.1:CONTAINER_PORT  (kasmweb HTTPS, Basic Auth 충족)
+#
+# [풀 아키텍처: Pre-warm Container Pool]
+# 서버 시작 시 POOL_SIZE(=2)개의 컨테이너를 미리 생성해 대기시킨다.
+# 사용자 요청 시 즉시 할당(pool hit) → URL 리다이렉트만 수행 → <5초 응답.
+# 풀 소진 시 온디맨드 생성(pool miss)으로 폴백한다.
+# 할당 후 백그라운드에서 자동 보충한다.
 # =============================================================================
 
 import asyncio
@@ -29,18 +35,79 @@ BROWSE_PORT = "6901/tcp"
 PORT_READY_TIMEOUT = 120
 PORT_POLL_INTERVAL = 1
 VNC_USER = "kasm_user"
-# VNC_PW는 세션별 uuid4().hex 로 생성된다 (DC-27).
-# 이 파일에 고정값을 두지 않는다.
 
-# 활성 세션: container_id → {container, network, timeout_task, proxy_task, vnc_pw}
+# ---------------------------------------------------------------------------
+# 풀 설정
+# ---------------------------------------------------------------------------
+
+POOL_SIZE = 2              # 상시 대기 컨테이너 수
+_POOL_PLACEHOLDER_URL = "about:blank"  # 워밍 시 Chromium에 열어두는 초기 URL
+
+_pool_idle: asyncio.Queue = asyncio.Queue()
+# asyncio 단일 스레드: await 없이 증감하므로 별도 락 불필요
+_pool_warming: int = 0
+
+# CDP(Chrome DevTools Protocol) Page.navigate 스크립트.
+# 컨테이너 내부에서 python3 -c 로 실행된다.
+# Chromium이 --remote-debugging-port=9222 로 기동된 경우에만 작동.
+_CDP_NAVIGATE_PY = (
+    "import json,socket,base64,os,struct\n"
+    "import urllib.request as _r\n"
+    "u=os.environ['KIOSK_URL']\n"
+    "try:\n"
+    "    d=json.loads(_r.urlopen('http://localhost:9222/json/list',timeout=2).read())\n"
+    "    if not d:raise RuntimeError('no tabs')\n"
+    "    ws=d[0]['webSocketDebuggerUrl']\n"
+    # ws://127.0.0.1:9222/path 또는 ws://localhost:9222/path → /path 만 추출
+    "    idx=ws.find('/',ws.find('//')+2);p=ws[idx:] if idx>=0 else '/'\n"
+    "    s=socket.create_connection(('localhost',9222),timeout=5)\n"
+    "    k=base64.b64encode(os.urandom(16)).decode()\n"
+    # Origin 헤더 필수: 없으면 Chromium이 HTTP 403 Forbidden 반환 → WS upgrade 실패
+    "    hs=('GET '+p+' HTTP/1.1\\r\\n'\n"
+    "        'Host: localhost:9222\\r\\n'\n"
+    "        'Upgrade: websocket\\r\\n'\n"
+    "        'Connection: Upgrade\\r\\n'\n"
+    "        'Origin: http://localhost:9222\\r\\n'\n"
+    "        'Sec-WebSocket-Key: '+k+'\\r\\n'\n"
+    "        'Sec-WebSocket-Version: 13\\r\\n'\n"
+    "        '\\r\\n')\n"
+    "    s.sendall(hs.encode())\n"
+    "    b=b'';s.settimeout(5)\n"
+    "    while b'\\r\\n\\r\\n' not in b:\n"
+    "        chunk=s.recv(4096)\n"
+    "        if not chunk:raise RuntimeError('WS handshake closed')\n"
+    "        b+=chunk\n"
+    # 101 Switching Protocols 확인: 없으면 403 등 거부 응답 → cdp_fail 로 처리
+    "    if b'101' not in b:raise RuntimeError('WS rejected:'+b[:80].decode(errors='replace'))\n"
+    "    m=json.dumps({'id':1,'method':'Page.navigate','params':{'url':u}}).encode()\n"
+    "    mk=os.urandom(4);n=len(m)\n"
+    "    if n<126:h=bytes([0x81,0x80|n])+mk\n"
+    "    elif n<65536:h=bytes([0x81,0xFE])+struct.pack('>H',n)+mk\n"
+    "    else:h=bytes([0x81,0xFF])+struct.pack('>Q',n)+mk\n"
+    "    s.sendall(h+bytes(x^mk[i%4]for i,x in enumerate(m)))\n"
+    "    s.settimeout(3)\n"
+    "    try:s.recv(512)\n"
+    "    except:pass\n"
+    "    s.close();print('cdp_ok')\n"
+    "except Exception as e:\n"
+    "    print('cdp_fail:'+str(e));raise SystemExit(1)\n"
+)
+
+# ---------------------------------------------------------------------------
+# 활성 세션
+# ---------------------------------------------------------------------------
+
+# 활성 세션: container_id → {container, network, timeout_task, proxy_task, vnc_pw, ...}
 _active_sessions: dict[str, dict] = {}
 
-# SSL-strip 프록시용 컨텍스트 — 자체서명 인증서를 무조건 수락
+# ---------------------------------------------------------------------------
+# SSL-strip 프록시용 컨텍스트
+# ---------------------------------------------------------------------------
+
 _PROXY_SSL_CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 _PROXY_SSL_CTX.check_hostname = False
 _PROXY_SSL_CTX.verify_mode = ssl.CERT_NONE
 try:
-    # KasmVNC 1.14.0은 레거시 암호 스위트를 사용할 수 있으므로 SECLEVEL=1로 완화
     _PROXY_SSL_CTX.set_ciphers("DEFAULT@SECLEVEL=1")
 except ssl.SSLError:
     pass
@@ -57,9 +124,6 @@ except Exception as _docker_err:
 # HTTP-aware TCP 프록시
 # ---------------------------------------------------------------------------
 
-# noVNC JS가 wss://host:kasmPort/ 로 직접 연결을 시도하면 SSL 인증서 오류로 실패한다.
-# HTML 응답에 이 스크립트를 주입해 모든 WebSocket URL을 프록시(window.location.host)로 재작성한다.
-# flutter_inappwebview userScript의 타이밍 불확실성을 우회하기 위해 서버사이드에서 주입한다.
 _WS_PROXY_INJECT = (
     b"<script>"
     b"(function(){"
@@ -71,8 +135,6 @@ _WS_PROXY_INJECT = (
     b"window.WebSocket=new Proxy(_W,{"
     b"construct:function(t,a){"
     b"if(typeof a[0]==='string'){"
-    # _pb를 이미 포함한 URL(path= 파라미터로 직접 설정된 경우)은 재작성하지 않는다.
-    # 그 외 절대경로(stats WebSocket 등)는 백엔드 경로로 재작성한다.
     b"if(_pb&&a[0].indexOf(_pb)!==-1){"
     b"console.log('[SH] WS skip(ok):'+a[0]);"
     b"}else{"
@@ -93,11 +155,6 @@ _WS_PROXY_INJECT = (
 # JS 버전 — webpack 번들 파일 앞에 선삽입해 KasmVNC 코드가 window.WebSocket을 캡처하기 전에 패치한다.
 # KasmVNC가 <head> 내 <script> 태그로 번들을 로드할 경우 HTML 주입보다 먼저 실행된다.
 # __shP 플래그로 여러 번들 파일에 걸쳐 중복 패치를 방지한다.
-#
-# Keepalive (__shKA): KasmVNC SelectTimeout / nginx proxy_read_timeout이 ~30초로
-# idle 클라이언트를 끊는 문제 회피. 25초마다 noVNC canvas에 1픽셀 합성 마우스 이동을
-# dispatch해 noVNC가 PointerEvent를 WebSocket으로 송신하도록 유도한다.
-# 실 사용자 입력과 충돌하지 않도록 화면 좌상단(0,0) 1픽셀 위치만 사용.
 _WS_PROXY_JS = (
     b";(function(){"
     b"if(window.WebSocket&&window.WebSocket.__shP)return;"
@@ -122,15 +179,9 @@ _WS_PROXY_JS = (
     b"}"
     b"});"
     b"window.WebSocket.__shP=1;"
-    b"if(!window.__shKA){window.__shKA=1;setInterval(function(){"
-    b"try{var c=document.querySelector('canvas');if(!c)return;"
-    b"var r=c.getBoundingClientRect();"
-    b"var ev=new MouseEvent('mousemove',{bubbles:true,cancelable:true,view:window,"
-    b"clientX:r.left+1,clientY:r.top+1,movementX:0,movementY:0});"
-    b"c.dispatchEvent(ev);}catch(e){}"
-    b"},25000);}"
     b"})();\n"
 )
+
 
 def _decode_chunked(data: bytes) -> bytes:
     """HTTP/1.1 chunked transfer encoding 디코드."""
@@ -178,14 +229,12 @@ async def _wait_for_host_port(host_port: int, timeout: int = 30) -> bool:
                 ),
                 timeout=5.0,
             )
-            # SSL 연결을 정상 종료해 KasmVNC가 깨끗한 상태로 다음 연결을 받도록 한다.
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=3.0)
             except Exception:
                 pass
             logger.info("[browse] 호스트측 포트 %d SSL 접속 확인 (시도 %d)", host_port, attempt)
-            # KasmVNC가 연결 정리를 완료할 시간을 준다
             await asyncio.sleep(1.0)
             return True
         except Exception as e:
@@ -236,7 +285,6 @@ async def _proxy_handle(
     이후 양방향 TCP 릴레이로 전환한다 (WebSocket upgrade도 동일하게 처리).
     auth_header: b"Authorization: Basic <base64>" 형식의 per-session 인증 헤더
     """
-    # HTTP 헤더 끝(CRLFCRLF)까지 수집
     buf = b""
     try:
         while b"\r\n\r\n" not in buf:
@@ -269,16 +317,10 @@ async def _proxy_handle(
     req_line = headers_raw.split(b"\r\n")[0].decode(errors="replace")
     logger.info("[proxy] %s | ws=%s", req_line[:100], is_websocket)
 
-    # Authorization 주입 (중복 방지) — per-session auth_header 사용
     if b"authorization:" not in headers_lower:
         headers_raw += b"\r\n" + auth_header.rstrip(b"\r\n")
 
     if not is_websocket:
-        # 일반 HTTP 요청 헤더 정규화:
-        # 1. Connection: close — 1요청/1연결 강제, kasmweb이 응답 후 SSL 연결 종료
-        # 2. Accept-Encoding: identity — gzip/br 비활성화
-        #    (압축 시 Content-Length=압축크기인데 Chromium이 압축해제 후 크기와 비교해
-        #    ERR_CONTENT_LENGTH_MISMATCH가 발생하는 경우 차단)
         req_lines = headers_raw.split(b"\r\n")
         req_lines = [l for l in req_lines
                      if not l.lower().startswith(b"connection:")
@@ -288,7 +330,6 @@ async def _proxy_handle(
         req_lines.append(b"Accept-Encoding: identity")
         headers_raw = b"\r\n".join(req_lines)
 
-    # SSL 연결 재시도: KasmVNC의 SSL 준비 완료 타이밍 차이를 흡수하기 위해 재시도한다.
     _RETRIES = 10
     remote_r = remote_w = None
     last_exc: Exception | None = None
@@ -320,7 +361,6 @@ async def _proxy_handle(
             type(last_exc).__name__ if last_exc else "Unknown",
             repr(last_exc),
         )
-        # ERR_EMPTY_RESPONSE 방지: HTTP 502 응답을 보내 클라이언트에 오류 원인 전달
         try:
             body = b"KasmVNC connection failed (502)"
             writer.write(
@@ -342,17 +382,12 @@ async def _proxy_handle(
     await remote_w.drain()
 
     if is_websocket:
-        # WebSocket: 양방향 릴레이 (업그레이드 이후 무한 스트림)
         await asyncio.gather(
             _relay(reader, remote_w),
             _relay(remote_r, writer),
             return_exceptions=True,
         )
     else:
-        # 일반 HTTP: 전체 응답을 버퍼에 수신한 뒤 Connection: close 방식으로 전달한다.
-        # Content-Length 재계산 방식은 SSL 종료 타이밍 차이로 ERR_CONTENT_LENGTH_MISMATCH가
-        # 여전히 발생하므로, Content-Length 없이 연결 종료로 응답 끝을 알린다.
-        # 클라이언트(WebView)는 Connection: close 시 FIN 수신 시점을 응답 완료로 인식한다.
         resp_buf = b""
         try:
             while True:
@@ -386,9 +421,6 @@ async def _proxy_handle(
             ]
             resp_lines.append(b"Connection: close")
 
-            # HTML/JS 응답에 WebSocket URL 재작성 스크립트를 주입한다.
-            # JS 번들 선삽입: KasmVNC가 <head> 내 <script>로 번들을 로드할 때
-            # HTML </head> 주입보다 먼저 실행되도록 JS 파일 앞에도 패치를 삽입한다.
             req_path_only = (
                 req_line.split(" ")[1].split("?")[0].lower()
                 if " " in req_line else ""
@@ -435,7 +467,6 @@ async def _proxy_handle(
             remote_w.close()
         except Exception:
             pass
-        # 명시적 FIN 전송: drain 후 writer를 닫아 클라이언트가 응답 완료를 인식하게 한다.
         try:
             writer.close()
             await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
@@ -448,9 +479,6 @@ async def _run_proxy_server(
     proxy_port: int,
     target_port: int,
 ) -> None:
-    # async with server 를 쓰면 CancelledError 시 wait_closed()가 호출돼
-    # 기존 TCP 연결이 살아있는 한 영원히 블록된다.
-    # server.close()만 호출하고 wait_closed()는 생략해 즉시 반환한다.
     try:
         await server.serve_forever()
     except asyncio.CancelledError:
@@ -462,7 +490,6 @@ async def _run_proxy_server(
 
 async def _start_ssl_strip_proxy(target_port: int, vnc_pw: str) -> tuple[int, asyncio.Task]:
     proxy_port = _find_free_port()
-    # per-session 인증 헤더 — DC-27
     session_auth_header = (
         b"Authorization: Basic "
         + base64.b64encode(f"{VNC_USER}:{vnc_pw}".encode())
@@ -472,8 +499,6 @@ async def _start_ssl_strip_proxy(target_port: int, vnc_pw: str) -> tuple[int, as
     async def _handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
         await _proxy_handle(r, w, "127.0.0.1", target_port, session_auth_header)
 
-    # 외부에서 직접 접근 불가: 127.0.0.1 전용 바인딩.
-    # Flutter는 FastAPI /sandbox/browse/{id}/novnc 를 통해 간접 접속한다.
     server = await asyncio.start_server(_handle, "127.0.0.1", proxy_port)
     task = asyncio.create_task(_run_proxy_server(server, proxy_port, target_port))
     logger.info(
@@ -540,7 +565,6 @@ async def _wait_for_http_ready(
                         scheme, port, code.decode(errors="replace"), attempt,
                     )
 
-                    # 인증 자격증명 진단 — kasm_user:vnc_pw 로 200이 오는지 확인
                     if code == b"401" and vnc_pw:
                         for uname in (VNC_USER, "user", ""):
                             try:
@@ -587,7 +611,7 @@ async def _wait_for_http_ready(
 
 
 # ---------------------------------------------------------------------------
-# 네트워크·세션 관리
+# 네트워크 관리
 # ---------------------------------------------------------------------------
 
 def _create_browse_network(client) -> object:
@@ -608,21 +632,147 @@ async def _auto_terminate(container_id: str, network_name: str) -> None:
     logger.info("[browse] 세션 타임아웃 자동 종료: container=%s", container_id[:12])
 
 
-async def create_browse_session(
-    url: str,
+async def _wait_for_cdp_ready(container, timeout_sec: int = 20) -> bool:
+    """
+    컨테이너 내 CDP 포트(9222)가 HTTP 요청에 응답할 때까지 대기한다.
+
+    kill+restart 로 Chromium 을 재시작한 직후 포트가 아직 열리지 않은 상태에서
+    풀에 추가하면, 다음 pool hit 시 CDP 가 실패해 watchdog 레이스가 재발한다.
+    이 함수로 포트 준비를 확인한 뒤 풀에 추가한다.
+
+    curl 은 kasmweb 이미지에 내장되어 있으므로 python3 없이도 사용 가능.
+    """
+    check_script = (
+        "curl -s http://localhost:9222/json/version "
+        "-m 1 -o /dev/null -w '%{http_code}' 2>/dev/null"
+    )
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    attempt = 0
+    while asyncio.get_event_loop().time() < deadline:
+        attempt += 1
+        try:
+            result = await asyncio.to_thread(
+                container.exec_run,
+                ["bash", "-c", check_script],
+            )
+            code = (result.output or b"").decode(errors="replace").strip()
+            if code == "200":
+                logger.info("[pool] CDP 포트(9222) 준비 완료 (시도 %d)", attempt)
+                return True
+        except Exception as e:
+            logger.debug("[pool] CDP 대기 중 오류 (시도 %d): %s", attempt, e)
+        await asyncio.sleep(1)
+    logger.warning("[pool] CDP 포트(9222) 준비 타임아웃 (%d초)", timeout_sec)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# 풀 관리: kiosk 리다이렉트
+# ---------------------------------------------------------------------------
+
+async def _do_kiosk_redirect(container, url: str) -> bool:
+    """
+    Chromium URL을 변경한다. kill 수행 여부를 bool로 반환한다.
+
+    [0. 래퍼 패치 — idempotent]
+    kasmweb 의 /usr/bin/chromium-browser 는 실제 바이너리를 호출하는 bash 래퍼다.
+    이 래퍼에 --remote-debugging-port=9222 와 kiosk 플래그를 한 번만 삽입한다.
+    이후 custom_startup.sh watchdog 이 Chromium 을 재시작할 때도 CDP 포트가 자동으로 열린다.
+
+    [1. CDP 우선 — 즉시 탐색, kill 없음]
+    port 9222 가 열려 있으면 Page.navigate 로 URL 변경.
+    watchdog 레이스 없음 — False 반환.
+
+    [2. kill + watchdog 재시작 위임 — 최초 워밍 시]
+    CDP 불가(port 9222 미열림) 시 Chromium 만 종료한다.
+    custom_startup.sh watchdog 이 ~1초 후 패치된 래퍼를 통해 재시작한다.
+    직접 Chromium 을 기동하지 않으므로 watchdog 레이스 컨디션 자체가 없어진다.
+    True 반환 → 호출측은 _wait_for_cdp_ready 로 재시작 완료를 확인해야 한다.
+
+    [주의] pgrep -f chrom 만으로 kill 하면 Xvnc(6901)까지 종료될 수 있다.
+    반드시 ss 로 Xvnc PID 를 식별하고 kill 대상에서 제외한다.
+    """
+    # ── 0. Chromium 래퍼 패치 (idempotent) ──────────────────────────────────────
+    # sed: "$@" → kiosk/debug flags "$@" (이미 패치된 경우 grep -q 로 스킵)
+    # |  구분자 사용: URL 내 / 가 있어도 안전
+    # &  교체문의 &: sed 에서 "매칭된 문자열" 즉 "$@" 로 치환
+    patch_cmd = (
+        "grep -q 'remote-debugging-port' /usr/bin/chromium-browser 2>/dev/null"
+        " || sed -i"
+        " 's|\"\\$@\"|--kiosk --disable-infobars --noerrdialogs"
+        " --disable-translate --remote-debugging-port=9222"
+        " --remote-allow-origins=http://localhost:9222 &|g'"
+        " /usr/bin/chromium-browser 2>/dev/null"
+        " && echo wrapper_patched || echo wrapper_already_patched"
+    )
+    try:
+        # /usr/bin/chromium-browser 는 root 소유이므로 user="root" 필수
+        pr = await asyncio.to_thread(
+            container.exec_run, ["bash", "-c", patch_cmd], user="root"
+        )
+        logger.debug(
+            "[browse] 래퍼 패치: %s",
+            (pr.output or b"").decode(errors="replace").strip() or "(no output)",
+        )
+    except Exception as e:
+        logger.debug("[browse] 래퍼 패치 실패 (무시): %s", e)
+
+    # ── 1. CDP 시도 ─────────────────────────────────────────────────────────
+    try:
+        cdp_result = await asyncio.to_thread(
+            container.exec_run,
+            ["python3", "-c", _CDP_NAVIGATE_PY],
+            environment={"KIOSK_URL": url},
+        )
+        output = (cdp_result.output or b"").decode(errors="replace").strip()
+        if "cdp_ok" in output:
+            logger.info("[browse] CDP 탐색 성공 → %s", url[:60])
+            return False  # kill 없음 — 호출측 sleep 불필요
+        logger.debug("[browse] CDP 불가 — kill+watchdog 폴백: %s", output)
+    except Exception as e:
+        logger.debug("[browse] CDP 실행 오류 — kill+watchdog 폴백: %s", e)
+
+    # ── 2. kill 폴백 (watchdog 재시작 위임) ─────────────────────────────────────
+    # Chromium 만 종료. watchdog 이 ~1초 후 패치된 래퍼로 재시작 → port 9222 열림.
+    # 직접 Chromium 을 기동하지 않으므로 watchdog 과의 레이스 컨디션이 없다.
+    kill_script = (
+        "XVNC_PID=$(ss -tlnp 2>/dev/null | grep ':6901'"
+        " | grep -oP 'pid=\\K[0-9]+' | head -1); "
+        "for p in $(pgrep -f chrom 2>/dev/null); do "
+        "  [ \"$p\" != \"$XVNC_PID\" ] && kill -9 \"$p\" 2>/dev/null; "
+        "done; "
+        "echo killed"
+    )
+    try:
+        result = await asyncio.to_thread(
+            container.exec_run,
+            ["bash", "-c", kill_script],
+        )
+        logger.info(
+            "[browse] Chromium 종료(watchdog 재시작 위임) → %s: %s",
+            url[:60],
+            (result.output or b"").decode(errors="replace").strip() or "(출력 없음)",
+        )
+    except Exception as e:
+        logger.warning("[browse] Chromium 종료 실패 (무시): %s", e)
+    return True  # kill 수행 — 호출측은 _wait_for_cdp_ready 로 재시작 확인 필요
+
+
+# ---------------------------------------------------------------------------
+# 풀 관리: 워밍 · 보충 · 초기화
+# ---------------------------------------------------------------------------
+
+async def _create_warmed_session(
     screen_width: int = 1080,
     screen_height: int = 1920,
-) -> dict:
+) -> dict | None:
     """
-    kasmweb/chromium 컨테이너를 생성하고 내부 프록시 포트를 반환한다.
-    noVNC URL은 라우터(sandbox.py)가 백엔드 경로로 조립한다.
-
-    Returns:
-        dict: {"container_id": str, "proxy_port": int, "network_name": str}
-              실패 시: {"error": str}
+    _POOL_PLACEHOLDER_URL 로 컨테이너를 생성하고 KasmVNC 준비까지 대기한다.
+    _active_sessions 에 등록하지 않고 풀용 dict 만 반환한다.
+    실패 시 None 을 반환하고 자원을 정리한다.
     """
     if not _DOCKER_AVAILABLE:
-        return {"error": "docker 패키지를 로드할 수 없습니다. 'pip install docker'를 실행하세요."}
+        return None
 
     container = None
     network = None
@@ -630,16 +780,16 @@ async def create_browse_session(
     try:
         client = await asyncio.to_thread(docker.from_env)
     except Exception as e:
-        return {"error": f"Docker 연결 실패 (Docker Desktop이 실행 중인지 확인): {e}"}
+        logger.error("[pool] Docker 연결 실패: %s", e)
+        return None
 
-    # DC-27: 세션별 랜덤 VNC 비밀번호 생성
     vnc_pw = uuid4().hex
 
     try:
         network = await asyncio.to_thread(_create_browse_network, client)
-
         resolution = f"{screen_width}x{screen_height}"
-        logger.info("[browse] 컨테이너 생성 중: %s → %s (해상도: %s)", BROWSE_IMAGE, url, resolution)
+        logger.info("[pool] 워밍 컨테이너 생성 중 (해상도: %s)", resolution)
+
         container = await asyncio.to_thread(
             client.containers.run,
             BROWSE_IMAGE,
@@ -647,12 +797,12 @@ async def create_browse_session(
             remove=True,
             ports={BROWSE_PORT: None},
             environment={
-                "VNC_PW": vnc_pw,  # DC-27: per-session
-                "LAUNCH_URL": url,
+                "VNC_PW": vnc_pw,
+                "LAUNCH_URL": _POOL_PLACEHOLDER_URL,
                 "RESOLUTION": resolution,
-                # --kiosk: 탭·주소창·메뉴 등 브라우저 UI 완전 제거.
-                # kasmweb/chromium 이미지 시작 스크립트가 CHROMIUM_FLAGS를
-                # Chromium 실행 인수로 전달한다.
+                # 참고: kasmweb/chromium:1.14.0 은 CHROMIUM_FLAGS / KASM_CHROME_FLAGS 를
+                # 실제 Chromium 시작 시 무시한다. 래퍼(/usr/bin/chromium-browser)를
+                # _do_kiosk_redirect 가 직접 패치해 kiosk + CDP 포트를 활성화한다.
                 "CHROMIUM_FLAGS": "--kiosk --no-first-run --disable-infobars",
                 "KASM_CHROME_FLAGS": "--kiosk --no-first-run --disable-infobars",
             },
@@ -674,58 +824,245 @@ async def create_browse_session(
                 f"kasmweb 포트 {host_port}가 {PORT_READY_TIMEOUT}초 내에 응답하지 않았습니다."
             )
 
-        # 컨테이너 내부 포트가 준비됐어도 Docker port-binding이 호스트에서
-        # 즉시 접속 가능하지 않을 수 있다. 프록시 시작 전에 TCP 수준 연결 확인.
         await _wait_for_host_port(int(host_port))
 
-        # ------------------------------------------------------------------
-        # Chromium kiosk 모드 재시작
-        # CHROMIUM_FLAGS 환경변수가 kasmweb/chromium:1.14.0에서 무시되므로
-        # 실행 중인 Chromium 브라우저 프로세스만 종료하고 --kiosk 플래그로 재시작한다.
-        #
-        # [주의] pkill -f chrom을 쓰면 Xvnc(포트 6901 서버)까지 종료된다.
-        # Xvnc의 실행 인자에 "chrom" 문자열이 포함되어 -f chrom에 매칭되기 때문이다.
-        # Xvnc가 죽으면 컨테이너가 종료(remove=True)되어 포트 바인딩이 사라진다.
-        # 반드시 ss로 Xvnc PID를 식별하고 kill 대상에서 제외해야 한다.
-        # ------------------------------------------------------------------
+        # kiosk 모드로 재시작 + --remote-debugging-port=9222 활성화
+        await _do_kiosk_redirect(container, _POOL_PLACEHOLDER_URL)
+
+        # CDP 포트가 실제로 열릴 때까지 대기 (최대 20초).
+        # 이 대기 없이 풀에 추가하면 pool hit 시 CDP 가 실패 → kill+restart → watchdog 레이스.
+        await _wait_for_cdp_ready(container)
+
+        kasm_host_port = int(host_port)
+        proxy_port, proxy_task = await _start_ssl_strip_proxy(kasm_host_port, vnc_pw)
+
+        container_id = container.id
+        logger.info(
+            "[pool] 워밍 완료: container=%s, proxy=127.0.0.1:%d",
+            container_id[:12], proxy_port,
+        )
+        return {
+            "container": container,
+            "container_id": container_id,
+            "network": network,
+            "network_name": network.name,
+            "proxy_port": proxy_port,
+            "proxy_task": proxy_task,
+            "kasm_host_port": kasm_host_port,
+            "vnc_pw": vnc_pw,
+        }
+
+    except BaseException as _exc:
+        # BaseException 으로 CancelledError(asyncio 취소)와 일반 Exception 을 모두 잡는다.
+        # ─ CancelledError: 서버 재시작/WatchFiles 취소 → 자원 정리 후 반드시 re-raise
+        # ─ 그 외 Exception : 컨테이너 404 등 → 자원 정리 후 None 반환 (graceful fallback)
+        _is_cancel = isinstance(_exc, asyncio.CancelledError)
+        if _is_cancel:
+            logger.warning("[pool] 워밍 취소됨(서버 재시작?) — 자원 정리")
+        else:
+            logger.warning("[pool] 워밍 실패(%s) — 자원 정리", type(_exc).__name__)
+        if container is not None:
+            try:
+                await asyncio.to_thread(container.stop, timeout=5)
+            except Exception:
+                pass
+        if network is not None:
+            try:
+                await asyncio.to_thread(network.remove)
+            except Exception:
+                pass
+        if _is_cancel:
+            raise  # CancelledError 는 반드시 re-raise 해야 asyncio 취소 체인이 완료된다
+        return None  # 일반 오류는 None 반환 → _replenish_pool 이 graceful 처리
+
+
+async def _replenish_pool() -> None:
+    """
+    풀이 POOL_SIZE 미만이면 워밍 컨테이너를 1개 생성해 큐에 적재한다.
+
+    asyncio 단일 스레드 특성을 이용한다:
+    await 전까지는 다른 코루틴이 끼어들 수 없으므로
+    qsize + _pool_warming 체크 → _pool_warming 증가가 원자적으로 실행된다.
+    """
+    global _pool_warming
+    if _pool_idle.qsize() + _pool_warming >= POOL_SIZE:
+        return
+    _pool_warming += 1
+    logger.info(
+        "[pool] 보충 시작: idle=%d, warming=%d → 목표 %d",
+        _pool_idle.qsize(), _pool_warming, POOL_SIZE,
+    )
+    try:
+        session = await _create_warmed_session()
+        if session:
+            await _pool_idle.put(session)
+            logger.info("[pool] 보충 완료: idle=%d", _pool_idle.qsize())
+        else:
+            logger.warning("[pool] 보충 실패: 워밍 컨테이너 생성 불가")
+    except asyncio.CancelledError:
+        raise  # 취소는 그대로 전파
+    except Exception as e:
+        # _create_warmed_session 에서 예외가 누출되는 경우의 최후 방어선
+        # "Task exception was never retrieved" 를 방지한다
+        logger.warning("[pool] _replenish_pool 예외 (무시): %s", e)
+    finally:
+        _pool_warming -= 1
+
+
+async def initialize_pool(size: int = POOL_SIZE) -> None:
+    """
+    서버 시작 시 백그라운드에서 워밍 컨테이너를 size개 생성한다.
+    서버 기동을 블록하지 않으며, 풀이 채워지는 동안 on-demand 폴백이 작동한다.
+    main.py lifespan 에서 호출한다.
+    """
+    if not _DOCKER_AVAILABLE:
+        logger.warning("[pool] Docker 없음 — 풀 초기화 생략")
+        return
+    logger.info("[pool] 초기화: %d개 워밍 백그라운드 시작", size)
+    for _ in range(size):
+        asyncio.create_task(_replenish_pool())
+
+
+# ---------------------------------------------------------------------------
+# 세션 생성 (공개 API)
+# ---------------------------------------------------------------------------
+
+async def create_browse_session(
+    url: str,
+    screen_width: int = 1080,
+    screen_height: int = 1920,
+) -> dict:
+    """
+    kasmweb/chromium 컨테이너를 할당하고 내부 프록시 포트를 반환한다.
+    noVNC URL은 라우터(sandbox.py)가 백엔드 경로로 조립한다.
+
+    [풀 hit]  _pool_idle 에서 즉시 할당 → URL 리다이렉트 → <5초 응답
+    [풀 miss] 온디맨드 컨테이너 생성 (기존 방식, 30~80초 소요)
+
+    Returns:
+        dict: {"container_id": str, "proxy_port": int, "network_name": str}
+              실패 시: {"error": str}
+    """
+    if not _DOCKER_AVAILABLE:
+        return {"error": "docker 패키지를 로드할 수 없습니다. 'pip install docker'를 실행하세요."}
+
+    # ── 1. 풀에서 즉시 할당 시도 ─────────────────────────────────────────────
+    pool_session: dict | None = None
+    try:
+        pool_session = _pool_idle.get_nowait()
+    except asyncio.QueueEmpty:
+        pass
+
+    if pool_session is not None:
+        container_id = pool_session["container_id"]
+        logger.info("[pool] 풀 hit: container=%s → %s", container_id[:12], url)
+
+        # 컨테이너 생존 확인 (idle 중에 죽었을 가능성)
         try:
-            kiosk_script = (
-                # 포트 6901을 소유한 Xvnc PID 식별 — 이 PID는 절대 종료 금지
-                "XVNC_PID=$(ss -tlnp 2>/dev/null | grep ':6901'"
-                " | grep -oP 'pid=\\K[0-9]+' | head -1); "
-                # Xvnc를 제외한 Chromium 브라우저 프로세스가 뜰 때까지 최대 20초 대기
-                "for i in $(seq 1 20); do "
-                "  CPID=$(pgrep -f chrom 2>/dev/null"
-                "    | grep -v \"^${XVNC_PID}$\" | head -1); "
-                "  if [ -n \"$CPID\" ]; then "
-                "    BIN=$(command -v chromium-browser 2>/dev/null"
-                "      || command -v chromium 2>/dev/null"
-                "      || command -v google-chrome 2>/dev/null"
-                "      || readlink -f /proc/$CPID/exe 2>/dev/null); "
-                "    echo \"kiosk restart: xvnc=$XVNC_PID bin=$BIN\"; "
-                # Xvnc를 제외한 chrom 관련 프로세스만 종료
-                "    for p in $(pgrep -f chrom 2>/dev/null); do "
-                "      [ \"$p\" != \"$XVNC_PID\" ] && kill -9 \"$p\" 2>/dev/null; "
-                "    done; "
-                "    sleep 1; "
-                "    DISPLAY=:1 \"$BIN\" --kiosk --no-first-run --disable-infobars "
-                "      --noerrdialogs --disable-translate \"$KIOSK_URL\" &>/dev/null & "
-                "    echo done; break; "
-                "  fi; "
-                "  sleep 1; "
-                "done"
+            await asyncio.to_thread(pool_session["container"].reload)
+            if pool_session["container"].status != "running":
+                raise RuntimeError(f"컨테이너 상태 이상: {pool_session['container'].status}")
+        except Exception as e:
+            logger.warning("[pool] idle 컨테이너 상태 이상, 온디맨드로 폴백: %s", e)
+            # 죽은 컨테이너·프록시·네트워크 정리 — 모두 asyncio.to_thread 로 감싸야 한다
+            proxy_task = pool_session.get("proxy_task")
+            if proxy_task and not proxy_task.done():
+                proxy_task.cancel()
+            try:
+                await asyncio.to_thread(pool_session["container"].stop, timeout=3)
+            except Exception:
+                pass
+            network_obj = pool_session.get("network")
+            if network_obj is not None:
+                try:
+                    await asyncio.to_thread(network_obj.remove)
+                except Exception:
+                    pass
+            # 풀 보충 후 온디맨드로 폴백
+            asyncio.create_task(_replenish_pool())
+            pool_session = None
+
+    if pool_session is not None:
+        # URL 리다이렉트: CDP 탐색 (CDP 불가 시 kill+restart 폴백)
+        killed = await _do_kiosk_redirect(pool_session["container"], url)
+        if killed:
+            # kill+restart 후 Chromium 기동 시간 확보 (CDP 성공 시엔 불필요)
+            await asyncio.sleep(1)
+
+        timeout_task = asyncio.create_task(
+            _auto_terminate(container_id, pool_session["network_name"])
+        )
+        _active_sessions[container_id] = {
+            **pool_session,
+            "timeout_task": timeout_task,
+        }
+
+        # 비동기 풀 보충 (현재 요청을 블록하지 않음)
+        asyncio.create_task(_replenish_pool())
+
+        logger.info(
+            "[pool] 풀 할당 완료: container=%s, proxy=127.0.0.1:%d",
+            container_id[:12], pool_session["proxy_port"],
+        )
+        return {
+            "container_id": container_id,
+            "proxy_port": pool_session["proxy_port"],
+            "network_name": pool_session["network_name"],
+        }
+
+    # ── 2. 온디맨드 폴백 (풀 miss 또는 idle 컨테이너 상태 이상) ──────────────
+    logger.info("[pool] 풀 miss — 온디맨드 생성: %s", url)
+
+    container = None
+    network = None
+
+    try:
+        client = await asyncio.to_thread(docker.from_env)
+    except Exception as e:
+        return {"error": f"Docker 연결 실패 (Docker Desktop이 실행 중인지 확인): {e}"}
+
+    vnc_pw = uuid4().hex
+
+    try:
+        network = await asyncio.to_thread(_create_browse_network, client)
+
+        resolution = f"{screen_width}x{screen_height}"
+        logger.info("[browse] 컨테이너 생성 중: %s → %s (해상도: %s)", BROWSE_IMAGE, url, resolution)
+        container = await asyncio.to_thread(
+            client.containers.run,
+            BROWSE_IMAGE,
+            detach=True,
+            remove=True,
+            ports={BROWSE_PORT: None},
+            environment={
+                "VNC_PW": vnc_pw,
+                "LAUNCH_URL": url,
+                "RESOLUTION": resolution,
+                "CHROMIUM_FLAGS": "--kiosk --no-first-run --disable-infobars",
+                "KASM_CHROME_FLAGS": "--kiosk --no-first-run --disable-infobars",
+            },
+            shm_size="512m",
+            network=network.name,
+            extra_hosts={"host.docker.internal": "0.0.0.0"},
+        )
+
+        await asyncio.sleep(2)
+        await asyncio.to_thread(container.reload)
+        port_bindings = container.ports.get(BROWSE_PORT) or []
+        host_port = port_bindings[0].get("HostPort") if port_bindings else None
+        if not host_port:
+            raise RuntimeError("컨테이너 포트 매핑을 읽을 수 없습니다.")
+
+        ready = await _wait_for_http_ready(host_port, container=container, vnc_pw=vnc_pw)
+        if not ready:
+            raise RuntimeError(
+                f"kasmweb 포트 {host_port}가 {PORT_READY_TIMEOUT}초 내에 응답하지 않았습니다."
             )
-            kiosk_result = await asyncio.to_thread(
-                container.exec_run,
-                ["bash", "-c", kiosk_script],
-                environment={"KIOSK_URL": url},
-            )
-            logger.info(
-                "[browse] kiosk 재시작: %s",
-                (kiosk_result.output or b"").decode(errors="replace").strip() or "(출력 없음)",
-            )
-        except Exception as kiosk_e:
-            logger.debug("[browse] kiosk 재시작 실패 (무시): %s", kiosk_e)
+
+        await _wait_for_host_port(int(host_port))
+
+        await _do_kiosk_redirect(container, url)
+        # 온디맨드 경로: Chromium은 LAUNCH_URL=url 로 이미 기동되어 있으므로 sleep 불필요
 
         kasm_host_port = int(host_port)
         proxy_port, proxy_task = await _start_ssl_strip_proxy(kasm_host_port, vnc_pw)
@@ -738,16 +1075,16 @@ async def create_browse_session(
             "timeout_task": timeout_task,
             "proxy_task": proxy_task,
             "proxy_port": proxy_port,
-            # WebSocket 직접 연결용: Docker 포트 바인딩 호스트 포트
             "kasm_host_port": kasm_host_port,
-            # DC-27: per-session VNC 비밀번호 (sandbox.py에서 novnc_url 구성에 사용)
             "vnc_pw": vnc_pw,
         }
 
         logger.info(
-            "[browse] 세션 생성 완료: container=%s, 내부 proxy=127.0.0.1:%d, kasm_port=%d",
+            "[browse] 온디맨드 생성 완료: container=%s, proxy=127.0.0.1:%d, kasm_port=%d",
             container_id[:12], proxy_port, kasm_host_port,
         )
+        # 온디맨드 성공 직후 풀 보충 트리거: pool miss 구간을 최소화한다
+        asyncio.create_task(_replenish_pool())
         return {
             "container_id": container_id,
             "proxy_port": proxy_port,
@@ -755,7 +1092,7 @@ async def create_browse_session(
         }
 
     except Exception as e:
-        logger.exception("[browse] 세션 생성 실패")
+        logger.exception("[browse] 온디맨드 세션 생성 실패")
         if container is not None:
             try:
                 await asyncio.to_thread(container.stop, timeout=5)
@@ -768,6 +1105,10 @@ async def create_browse_session(
                 pass
         return {"error": str(e)}
 
+
+# ---------------------------------------------------------------------------
+# 세션 종료 (공개 API)
+# ---------------------------------------------------------------------------
 
 async def terminate_browse_session(container_id: str, network_name: str) -> None:
     session = _active_sessions.pop(container_id, None)
@@ -803,36 +1144,108 @@ async def terminate_browse_session(container_id: str, network_name: str) -> None
         except Exception as e:
             logger.warning("[browse] 네트워크 삭제 실패: %s", e)
 
+    # 세션 종료 후 풀 보충
+    asyncio.create_task(_replenish_pool())
+
+
+# ---------------------------------------------------------------------------
+# 서버 종료 시 전체 정리 (공개 API)
+# ---------------------------------------------------------------------------
+
+async def cleanup_stale_networks() -> None:
+    """
+    서버 시작 시 컨테이너 없이 남겨진 browse_net_* 고아 네트워크를 삭제한다.
+
+    Docker 브리지 네트워크는 기본적으로 약 30개의 /20 서브넷만 허용한다.
+    서버 재시작(WatchFiles, 크래시)으로 워밍 중이던 asyncio.Task 가 취소되면
+    except Exception 이 CancelledError 를 잡지 못해 네트워크가 남겨진다.
+    이 함수가 startup 에서 호출되어 누적된 고아 네트워크를 일괄 삭제한다.
+    """
+    if not _DOCKER_AVAILABLE:
+        return
+    try:
+        client = await asyncio.to_thread(docker.from_env)
+        networks = await asyncio.to_thread(
+            client.networks.list,
+            filters={"name": "browse_net_"},
+        )
+        removed = 0
+        for net in networks:
+            try:
+                await asyncio.to_thread(net.reload)
+                if not net.containers:
+                    await asyncio.to_thread(net.remove)
+                    logger.info("[startup] 고아 네트워크 삭제: %s", net.name)
+                    removed += 1
+            except Exception as e:
+                logger.debug(
+                    "[startup] 네트워크 처리 오류 (%s): %s",
+                    getattr(net, "name", "?"), e,
+                )
+        if removed:
+            logger.info("[startup] 고아 browse_net_* 네트워크 %d개 삭제 완료", removed)
+    except Exception as e:
+        logger.warning("[startup] 고아 네트워크 정리 중 오류 (무시): %s", e)
+
 
 async def shutdown_all_sessions() -> None:
-    """서버 종료 시 모든 활성 browse 세션을 일괄 정리한다.
+    """서버 종료 시 활성 세션과 풀 idle 컨테이너를 모두 정리한다."""
 
-    lifespan 종료 훅에서 호출한다. proxy_task·timeout_task를 취소하고
-    Docker 컨테이너와 네트워크를 제거해 고아 리소스가 남지 않도록 한다.
-    """
-    if not _active_sessions:
-        return
+    # 활성 세션 정리
+    if _active_sessions:
+        logger.info("[browse] 서버 종료 — 활성 세션 %d개 정리 중", len(_active_sessions))
+        for container_id, session in list(_active_sessions.items()):
+            for key in ("timeout_task", "proxy_task"):
+                t = session.get(key)
+                if t and not t.done():
+                    t.cancel()
 
-    logger.info("[browse] 서버 종료 — 활성 세션 %d개 정리 중", len(_active_sessions))
-    for container_id, session in list(_active_sessions.items()):
-        for key in ("timeout_task", "proxy_task"):
-            t = session.get(key)
-            if t and not t.done():
-                t.cancel()
+            container = session.get("container")
+            if container is not None:
+                try:
+                    await asyncio.to_thread(container.stop, timeout=3)
+                except Exception as e:
+                    logger.warning("[browse] 종료 중 컨테이너 stop 실패 (%s): %s", container_id[:12], e)
 
-        container = session.get("container")
-        if container is not None:
+            network = session.get("network")
+            if network is not None:
+                try:
+                    await asyncio.to_thread(network.remove)
+                except Exception as e:
+                    logger.warning("[browse] 종료 중 네트워크 remove 실패: %s", e)
+
+        _active_sessions.clear()
+        logger.info("[browse] 활성 세션 정리 완료")
+
+    # 풀 idle 컨테이너 정리
+    idle_count = _pool_idle.qsize()
+    if idle_count:
+        logger.info("[pool] 서버 종료 — idle 컨테이너 %d개 정리 중", idle_count)
+        while not _pool_idle.empty():
             try:
-                await asyncio.to_thread(container.stop, timeout=3)
-            except Exception as e:
-                logger.warning("[browse] 종료 중 컨테이너 stop 실패 (%s): %s", container_id[:12], e)
+                session = _pool_idle.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
-        network = session.get("network")
-        if network is not None:
-            try:
-                await asyncio.to_thread(network.remove)
-            except Exception as e:
-                logger.warning("[browse] 종료 중 네트워크 remove 실패: %s", e)
+            proxy_task = session.get("proxy_task")
+            if proxy_task and not proxy_task.done():
+                proxy_task.cancel()
 
-    _active_sessions.clear()
-    logger.info("[browse] 모든 세션 정리 완료")
+            container = session.get("container")
+            if container is not None:
+                try:
+                    await asyncio.to_thread(container.stop, timeout=3)
+                except Exception as e:
+                    logger.warning(
+                        "[pool] 종료 중 idle 컨테이너 stop 실패 (%s): %s",
+                        session.get("container_id", "?")[:12], e,
+                    )
+
+            network = session.get("network")
+            if network is not None:
+                try:
+                    await asyncio.to_thread(network.remove)
+                except Exception as e:
+                    logger.warning("[pool] 종료 중 idle 네트워크 remove 실패: %s", e)
+
+        logger.info("[pool] idle 컨테이너 정리 완료")
