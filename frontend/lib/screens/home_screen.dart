@@ -549,7 +549,6 @@ class _HomeScreenState extends State<HomeScreen>
                   ListTile(
                     leading: const Icon(Icons.login, color: Color(0xFFFEE500)),
                     title: const Text('카카오로 로그인'),
-                    subtitle: const Text('위험 신고에 더 큰 가중치가 적용됩니다'),
                     onTap: () {
                       Navigator.pop(sheetCtx);
                       Navigator.of(context).push(

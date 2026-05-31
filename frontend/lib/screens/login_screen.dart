@@ -100,15 +100,6 @@ class _LoginScreenState extends State<LoginScreen> {
               _buildKakaoButton(),
               const SizedBox(height: 12),
               _buildAnonymousButton(),
-              const SizedBox(height: 16),
-              const Text(
-                '가입하면 위험 신고에 더 큰 가중치가 적용됩니다',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF9CA3AF),
-                ),
-              ),
               const Spacer(),
             ],
           ),
