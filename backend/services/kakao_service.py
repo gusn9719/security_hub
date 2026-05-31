@@ -48,10 +48,10 @@ async def fetch_user_info(access_token: str) -> dict:
 
     # 401: 만료/무효 토큰. 그 외 4xx/5xx 도 인증 실패로 본다.
     if resp.status_code != 200:
-        logger.warning(
-            "[kakao] kapi 비정상 응답 status=%d body=%s",
-            resp.status_code, resp.text[:200],
-        )
+        # body 평문은 로그에 남기지 않는다 — 카카오 응답에 회원 식별자·이메일
+        # 등이 포함될 수 있어 운영 로그 누적 시 PII 정책 위반 위험. 상태
+        # 코드만 기록해도 운영 디버깅에 충분.
+        logger.warning("[kakao] kapi 비정상 응답 status=%d", resp.status_code)
         raise KakaoAuthError(f"카카오 토큰 검증 실패 (status={resp.status_code})")
 
     try:
