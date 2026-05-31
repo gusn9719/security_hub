@@ -99,25 +99,20 @@ async def get_me(request: Request) -> MeResponse:
     """
     Authorization: Bearer <jwt> 로 본인 프로필을 반환한다.
 
-    OptionalAuthMiddleware (Phase 3) 가 request.state.user_id 를 채우지만,
-    /auth/me 는 인증이 필수이므로 미들웨어 결과와 무관하게 헤더를 직접
-    검증한다. (미들웨어 도입 전에도 이 라우터만으로 동작)
+    OptionalAuthMiddleware (Phase 3) 가 토큰 검증을 일원화한다 — 토큰이
+    없거나 무효이면 미들웨어가 자체적으로 401 로 잘라낸다. 본 라우터에
+    들어왔다는 사실은 곧 토큰이 유효하다는 의미. 그러므로 헤더 재파싱
+    없이 get_optional_user_id 헬퍼로 미들웨어 결과만 신뢰하면 충분하다.
+
+    그래도 user_id == None 인 경로는 막아 둔다 — 익명 사용자가 /auth/me
+    를 호출한 경우(가입자 전용 엔드포인트인데 토큰 없이 진입). 401 응답.
     """
-    auth = request.headers.get("Authorization", "")
-    if not auth.lower().startswith("bearer "):
+    user_id = get_optional_user_id(request)
+    if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authorization: Bearer <jwt> 헤더가 필요합니다.",
         )
-    token = auth.split(" ", 1)[1].strip()
-
-    try:
-        user_id = jwt_service.decode_token(token)
-    except jwt_service.JWTError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-        ) from e
 
     profile = await asyncio.to_thread(user_service.get_by_id, user_id)
     if profile is None:
