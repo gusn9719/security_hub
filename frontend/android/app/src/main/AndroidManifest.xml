@@ -15,6 +15,9 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="http" />
         </intent>
+        <!-- AUTH-01: 카카오톡 앱 설치 여부 조회. isKakaoTalkInstalled() 의
+             내부 패키지 가시성 (Android 11+) 보장. -->
+        <package android:name="com.kakao.talk" />
     </queries>
     <application
         android:label="security_hub"
@@ -49,6 +52,24 @@
                 <data android:mimeType="text/plain"/>
             </intent-filter>
         </activity>
+
+        <!-- AUTH-01: 카카오 로그인 redirect 수신 액티비티.
+             kakao_flutter_sdk_common 1.10.0 의 실제 클래스는
+             'com.kakao.sdk.flutter.AuthCodeCustomTabsActivity' 다.
+             ('.auth.AuthCodeHandlerActivity' 는 네이티브 SDK 의 이름으로 Flutter SDK 엔 없음 — 등록 시 ClassNotFoundException 으로 앱이 죽는다.)
+             SDK 의 AndroidManifest 가 액티비티 자체는 이미 선언하므로 호스트
+             앱은 redirect 스킴을 매핑하는 intent-filter 만 얹어주면 된다. -->
+        <activity
+            android:name="com.kakao.sdk.flutter.AuthCodeCustomTabsActivity"
+            android:exported="true">
+            <intent-filter android:label="flutter_web_auth">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="kakao${kakaoNativeKey}" android:host="oauth"/>
+            </intent-filter>
+        </activity>
+
         <!-- INP-05: 앱이 꺼진 상태에서도 SMS 수신 감지 (매니페스트 등록) -->
         <receiver
             android:name=".SmsReceiver"

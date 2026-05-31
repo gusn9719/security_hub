@@ -702,35 +702,53 @@ def score_url(
     # ─────────────────────────────────────────────────────────────────────────
     # 사용자 투표 시그널 (피드백 순환 — 본 앱의 핵심 차별화)
     # ─────────────────────────────────────────────────────────────────────────
-    # Layer 2 어그로 방어: 우세한 방향성이 있을 때만 시그널 발동.
-    #   danger > safe → danger 시그널
-    #   safe > danger → safe 시그널 (음의 가중치)
-    #   spam > safe   → spam 시그널
+    # 어그로 방어 Layer 2 (우세 방향 가드) + Layer 5 (가입자 가중) 동시 적용.
+    #
+    #   우세 방향 (합계 기준):
+    #     danger > safe → danger 시그널
+    #     safe > danger → safe 시그널 (음의 가중치)
+    #     spam > safe   → spam 시그널
+    #
+    #   가입자/익명 임계값 (Phase 2 — AUTH-01):
+    #     prior_*_vote_high : anon_X ≥ 10  OR  user_X ≥ 3
+    #     prior_*_vote_low  : anon_X ≥ 3   OR  user_X ≥ 1
+    #     → 가입자 1 명 ≈ 익명 3~4 명 권위. 카카오 계정은 본인인증을 거친
+    #       자연인이라 임시 UUID 100 개보다 신뢰도가 본질적으로 다르다.
+    #
     # 'unsure' 카운트는 본 분기에서 사용하지 않음 (DB 슬롯도 점유 안 함).
     if vote_counts:
+        # 합계 — 우세 방향 가드용. 후방 호환 키 (safe/danger/spam).
         danger_count = vote_counts.get("danger", 0)
         safe_count   = vote_counts.get("safe", 0)
         spam_count   = vote_counts.get("spam", 0)
 
+        # 분리 카운트 — 새 임계값용. dict 에 없으면 0 fallback.
+        anon_danger = vote_counts.get("anon_danger", 0)
+        user_danger = vote_counts.get("user_danger", 0)
+        anon_safe   = vote_counts.get("anon_safe",   0)
+        user_safe   = vote_counts.get("user_safe",   0)
+        anon_spam   = vote_counts.get("anon_spam",   0)
+        user_spam   = vote_counts.get("user_spam",   0)
+
         # danger 우세 — 양의 시그널
         if danger_count > safe_count:
-            if danger_count >= 10:
+            if anon_danger >= 10 or user_danger >= 3:
                 triggered["prior_danger_vote_high"] = _WEIGHTS["prior_danger_vote_high"]
-            elif danger_count >= 3:
+            elif anon_danger >= 3 or user_danger >= 1:
                 triggered["prior_danger_vote_low"] = _WEIGHTS["prior_danger_vote_low"]
 
         # safe 우세 — 음의 시그널 (정상 신생 사이트 톤 완화, v0527 신규)
         if safe_count > danger_count:
-            if safe_count >= 10:
+            if anon_safe >= 10 or user_safe >= 3:
                 triggered["prior_safe_vote_high"] = _WEIGHTS["prior_safe_vote_high"]
-            elif safe_count >= 3:
+            elif anon_safe >= 3 or user_safe >= 1:
                 triggered["prior_safe_vote_low"] = _WEIGHTS["prior_safe_vote_low"]
 
         # spam 우세 — 보조 약신호
         if spam_count > safe_count:
-            if spam_count >= 10:
+            if anon_spam >= 10 or user_spam >= 3:
                 triggered["prior_spam_vote_high"] = _WEIGHTS["prior_spam_vote_high"]
-            elif spam_count >= 3:
+            elif anon_spam >= 3 or user_spam >= 1:
                 triggered["prior_spam_vote_low"] = _WEIGHTS["prior_spam_vote_low"]
 
     # ─────────────────────────────────────────────────────────────────────────

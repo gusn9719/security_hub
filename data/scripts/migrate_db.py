@@ -212,7 +212,7 @@ def _remove_old_whitelist_seeds(conn) -> int:
 
 def _verify_schema(conn) -> None:
     """PRAGMA table_info로 변경된 테이블 컬럼을 출력해 검증한다."""
-    targets = ["sandbox_results", "url_votes", "analysis_history"]
+    targets = ["sandbox_results", "url_votes", "analysis_history", "users"]
     logger.info("=" * 60)
     logger.info("[검증] 테이블 스키마 확인")
     for table in targets:
@@ -255,6 +255,12 @@ def run_migration() -> None:
 
         logger.info("[마이그레이션] 5단계: 구버전 화이트리스트 시드 1회 제거 (P0-4)")
         _remove_old_whitelist_seeds(conn)
+
+        # users.kakao_id 는 UNIQUE 제약으로 sqlite_autoindex 가 자동 생긴다.
+        # Phase 1 초기 구현이 같은 컬럼에 idx_users_kakao_id 를 추가로 만든
+        # 흔적이 로컬 DB 에 남아있을 수 있어 1회 정리.
+        logger.info("[마이그레이션] 6단계: 중복 인덱스 idx_users_kakao_id 정리")
+        conn.execute("DROP INDEX IF EXISTS idx_users_kakao_id")
 
         conn.commit()
 

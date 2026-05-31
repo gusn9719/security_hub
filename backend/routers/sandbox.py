@@ -21,6 +21,7 @@ from services import browse_service
 from services.browse_service import create_browse_session, terminate_browse_session
 from schemas.analysis import SandboxAutoTestRequest, SandboxAutoTestResponse, VoteRequest, VoteResponse
 from database.vote_service import save_vote
+from routers.auth import get_optional_user_id
 import config as _cfg
 
 logger = logging.getLogger(__name__)
@@ -87,9 +88,17 @@ async def submit_vote(http_request: Request, request: VoteRequest) -> VoteRespon
         VoteResponse: success 여부와 메시지
     """
     device_uuid = http_request.headers.get("X-Device-UUID", request.device_uuid)
-    logger.info("[/sandbox/votes] 요청: url=%s vote=%s uuid=%s", request.url, request.vote, device_uuid[:8])
+    # AUTH-01 (Phase 3): OptionalAuthMiddleware 가 채운 user_id 만 사용.
+    # 헤더 직접 파싱 금지 — 미들웨어 우회로 가입자 가중치 도용을 막기 위함.
+    user_id = get_optional_user_id(http_request)
+    logger.info(
+        "[/sandbox/votes] 요청: url=%s vote=%s uuid=%s auth=%s",
+        request.url, request.vote, device_uuid[:8],
+        "user" if user_id is not None else "anon",
+    )
     saved = await asyncio.to_thread(
-        save_vote, request.url, request.session_id, request.vote, device_uuid
+        save_vote,
+        request.url, request.session_id, request.vote, device_uuid, user_id,
     )
     if saved:
         logger.info("[/sandbox/votes] 저장 완료: session_id=%s", request.session_id)

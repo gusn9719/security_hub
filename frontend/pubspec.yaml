@@ -40,6 +40,8 @@ dependencies:
   flutter_inappwebview: ^6.1.5
   shared_preferences: ^2.3.0
   uuid: ^4.5.1
+  # AUTH-01: 카카오 소셜 로그인. talk login (앱 설치 시) / web login 자동 분기.
+  kakao_flutter_sdk_user: ^1.9.0
 
 dev_dependencies:
   flutter_test:

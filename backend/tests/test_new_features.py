@@ -75,29 +75,41 @@ class TestVoteSignal:
         assert "prior_danger_vote_low" not in result.triggered
 
     def test_danger_lt3_no_signal(self):
-        """TC-NF-06: danger < 3 이면 투표 시그널 없음."""
+        """TC-NF-06: 익명 danger < 3 + 가입자 0 이면 투표 시그널 없음."""
         result = score_url(
             self._CLEAN_URL,
-            vote_counts={"danger": 2, "safe": 0, "total": 2},
+            vote_counts={
+                "danger": 2, "safe": 0, "total": 2,
+                "anon_danger": 2, "user_danger": 0,
+                "anon_safe": 0, "user_safe": 0,
+            },
         )
         assert "prior_danger_vote_high" not in result.triggered
         assert "prior_danger_vote_low" not in result.triggered
 
     def test_danger_gte3_low_signal(self):
-        """TC-NF-07: danger >= 3 and danger > safe → prior_danger_vote_low (+20)."""
+        """TC-NF-07: 익명 danger >= 3 + danger > safe → prior_danger_vote_low (+20)."""
         result = score_url(
             self._CLEAN_URL,
-            vote_counts={"danger": 3, "safe": 0, "total": 3},
+            vote_counts={
+                "danger": 3, "safe": 0, "total": 3,
+                "anon_danger": 3, "user_danger": 0,
+                "anon_safe": 0, "user_safe": 0,
+            },
         )
         assert "prior_danger_vote_low" in result.triggered
         assert result.triggered["prior_danger_vote_low"] == 20
         assert "prior_danger_vote_high" not in result.triggered
 
     def test_danger_gte10_high_signal(self):
-        """TC-NF-08: danger >= 10 and danger > safe → prior_danger_vote_high (+35)."""
+        """TC-NF-08: 익명 danger >= 10 + danger > safe → prior_danger_vote_high (+35)."""
         result = score_url(
             self._CLEAN_URL,
-            vote_counts={"danger": 10, "safe": 2, "total": 12},
+            vote_counts={
+                "danger": 10, "safe": 2, "total": 12,
+                "anon_danger": 10, "user_danger": 0,
+                "anon_safe": 2, "user_safe": 0,
+            },
         )
         assert "prior_danger_vote_high" in result.triggered
         assert result.triggered["prior_danger_vote_high"] == 35
@@ -108,7 +120,11 @@ class TestVoteSignal:
         # danger == safe
         result = score_url(
             self._CLEAN_URL,
-            vote_counts={"danger": 5, "safe": 5, "total": 10},
+            vote_counts={
+                "danger": 5, "safe": 5, "total": 10,
+                "anon_danger": 5, "user_danger": 0,
+                "anon_safe": 5, "user_safe": 0,
+            },
         )
         assert "prior_danger_vote_high" not in result.triggered
         assert "prior_danger_vote_low" not in result.triggered
@@ -116,7 +132,11 @@ class TestVoteSignal:
         # safe > danger
         result2 = score_url(
             self._CLEAN_URL,
-            vote_counts={"danger": 5, "safe": 8, "total": 13},
+            vote_counts={
+                "danger": 5, "safe": 8, "total": 13,
+                "anon_danger": 5, "user_danger": 0,
+                "anon_safe": 8, "user_safe": 0,
+            },
         )
         assert "prior_danger_vote_high" not in result2.triggered
         assert "prior_danger_vote_low" not in result2.triggered

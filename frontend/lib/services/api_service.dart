@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/analysis_result.dart';
+import 'auth_service.dart';
 
 class ApiService {
   // -------------------------------------------------------------------------
@@ -31,6 +32,11 @@ class ApiService {
   static const String _uuidKey = 'device_uuid';
   static String? _cachedUuid;
 
+  /// 같은 device_uuid 를 다른 서비스(예: AuthService 의 로그인 흐름)에서도
+  /// 부착해야 하므로 public wrapper 를 둔다. 헤더 부착 책임은 본 모듈에 모이지만,
+  /// 직접 호출이 필요한 외부 흐름에 안전한 인터페이스 노출용.
+  static Future<String> deviceUuid() => _getOrCreateDeviceUUID();
+
   /// SharedPreferences에 저장된 device_uuid를 반환한다.
   /// 없으면 UUID v4를 생성 후 저장한다. 앱 재설치 전까지 동일 UUID 유지.
   static Future<String> _getOrCreateDeviceUUID() async {
@@ -46,12 +52,31 @@ class ApiService {
   }
 
   /// 모든 요청에 공통으로 주입되는 헤더를 반환한다.
+  ///
+  /// AUTH-01: 캐시된 JWT 가 있으면 Authorization: Bearer 자동 부착.
+  /// JWT 가 없으면 익명 요청 — OptionalAuthMiddleware 가 그대로 통과.
   static Future<Map<String, String>> _headers({bool json = true}) async {
     final uuid = await _getOrCreateDeviceUUID();
+    final jwt = AuthService.currentJwt();
     return {
       if (json) 'Content-Type': 'application/json; charset=utf-8',
       'X-Device-UUID': uuid,
+      if (jwt != null) 'Authorization': 'Bearer $jwt',
     };
+  }
+
+  /// 백엔드가 401 을 돌려주면 (만료·서명오류 등) 토큰을 폐기해
+  /// 다음 요청부터 자연스럽게 익명 모드로 전환되도록 한다.
+  ///
+  /// 자동 재로그인은 시도하지 않는다 — 카카오 SDK 의 사용자 인터랙션이
+  /// 필요한 흐름이라 백그라운드에서 무인으로 처리할 수 없다. 토큰 비우기
+  /// 후 사용자가 다음에 가입자 기능을 누를 때 로그인 화면으로 안내하는 게
+  /// 명확하다.
+  static Future<void> _handleAuthExpiry(http.Response resp) async {
+    if (resp.statusCode != 401) return;
+    if (AuthService.currentJwt() == null) return;  // 익명이면 무시
+    debugPrint('[ApiService] 401 수신 — JWT 폐기 후 익명 모드로 전환');
+    await AuthService.clearLocalAuth();
   }
 
   /// 피싱 의심 텍스트를 백엔드로 전송하고 분석 결과를 반환한다.
@@ -77,6 +102,7 @@ class ApiService {
         final data = jsonDecode(utf8.decode(response.bodyBytes));
         return AnalysisResult.fromJson(data);
       } else {
+        await _handleAuthExpiry(response);
         throw Exception('분석 서버 오류 (${response.statusCode})');
       }
     } on SocketException catch (e) {
@@ -124,6 +150,7 @@ class ApiService {
       if (response.statusCode == 200) {
         return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       } else {
+        await _handleAuthExpiry(response);
         throw Exception('분석 서버에 일시적인 문제가 생겼어요 (${response.statusCode})');
       }
     } on SocketException {
@@ -166,6 +193,7 @@ class ApiService {
       } else if (response.statusCode == 503) {
         throw Exception('서버가 잠시 점검 중이에요. 잠시 후 다시 시도해 주세요.');
       } else {
+        await _handleAuthExpiry(response);
         throw Exception('서버 오류 (${response.statusCode}): ${response.body}');
       }
     } on SocketException {
@@ -200,6 +228,7 @@ class ApiService {
       if (response.statusCode == 200) {
         return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       }
+      await _handleAuthExpiry(response);
       return {'success': false, 'message': '서버 오류 (${response.statusCode})'};
     } catch (e) {
       debugPrint('[ApiService] submitVote 실패 (무시): $e');
