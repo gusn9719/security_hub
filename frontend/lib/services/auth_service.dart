@@ -17,6 +17,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:http/http.dart' as http;
 import 'package:kakao_flutter_sdk_user/kakao_flutter_sdk_user.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -141,10 +142,23 @@ class AuthService {
   ///   - Exception: 카카오 SDK 또는 백엔드 통신 실패.
   static Future<AuthUser> loginWithKakao({String? deviceUuid}) async {
     // 1. 카카오 OAuthToken 획득. talk → web 폴백.
+    //
+    // 사용자가 talk login 화면에서 '취소' 를 누른 경우 PlatformException
+    // (code=CANCELED) 가 발생한다. 이걸 catch 로 잡아 web login 으로 자동
+    // 폴백하면 사용자가 명시적으로 취소했는데 카카오 로그인 화면이 또 떠
+    // UX 가 어긋난다. CANCELED 는 rethrow 해서 호출자(login_screen)의 catch
+    // 가 silent 처리하도록 한다. talk 실패가 진짜 오류(앱 미설치·통신 실패
+    // 등) 일 때만 web 폴백.
     OAuthToken token;
     if (await isKakaoTalkInstalled()) {
       try {
         token = await UserApi.instance.loginWithKakaoTalk();
+      } on PlatformException catch (e) {
+        if (e.code == 'CANCELED' || e.code == 'CANCELLED') {
+          rethrow;
+        }
+        debugPrint('[AuthService] talk login 실패, web 폴백: $e');
+        token = await UserApi.instance.loginWithKakaoAccount();
       } catch (e) {
         debugPrint('[AuthService] talk login 실패, web 폴백: $e');
         token = await UserApi.instance.loginWithKakaoAccount();
