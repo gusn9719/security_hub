@@ -236,6 +236,25 @@ class ApiService {
     }
   }
 
+  /// DC-34: 7-A 세션의 상태를 조회한다.
+  ///
+  /// [containerId]: startBrowseSessionV2()가 반환한 컨테이너 ID
+  /// 반환값: {"active": bool, "threat_detected": bool, "threat_reason": str, "threat_url": str}
+  /// 실패 시 예외를 throw하지 않고 active=true를 반환한다 (오감지 방지).
+  static Future<Map<String, dynamic>> getBrowseSessionStatus(String containerId) async {
+    final uri = Uri.parse('$_baseUrl/sandbox/browse/$containerId/status');
+    try {
+      final h = await _headers(json: false);
+      final response = await http.get(uri, headers: h).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      debugPrint('[ApiService] getBrowseSessionStatus 실패 (무시): $e');
+    }
+    return {'active': true, 'threat_detected': false, 'threat_reason': '', 'threat_url': ''};
+  }
+
   /// container_id의 kasmweb/chromium 컨테이너를 종료하고 네트워크를 삭제한다.
   ///
   /// [containerId]: startBrowseSessionV2()가 반환한 컨테이너 ID

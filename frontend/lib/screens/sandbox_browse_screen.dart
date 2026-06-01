@@ -13,6 +13,7 @@
 // wss:// 로 연결하는 경우에도 자체서명 인증서 거부가 발생하지 않도록 한다.
 // =============================================================================
 
+import 'dart:async';
 import 'dart:collection';
 
 import 'package:flutter/material.dart';
@@ -52,9 +53,53 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
   bool _voteDone = false;
   bool _loadStarted = false;
 
+  // DC-34: 위협 자동 차단 상태
+  bool _threatDetected = false;
+  String _threatReason = '';
+  Timer? _statusTimer;
+  bool _pollingInProgress = false;  // async 콜백 중첩 방지
+
+  @override
+  void initState() {
+    super.initState();
+    _startStatusPolling();
+  }
+
+  void _startStatusPolling() {
+    _statusTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      // 이전 폴링이 아직 진행 중이면 스킵 (네트워크 지연 시 요청 중첩 방지)
+      if (_pollingInProgress) return;
+      if (!mounted || _sessionExpired || _threatDetected) {
+        _stopStatusPolling();
+        return;
+      }
+      _pollingInProgress = true;
+      try {
+        final status = await ApiService.getBrowseSessionStatus(widget.containerId);
+        if (!mounted) return;
+        if (status['threat_detected'] == true) {
+          _stopStatusPolling();
+          setState(() {
+            _threatDetected = true;
+            _threatReason = (status['threat_reason'] as String?) ?? '';
+          });
+        }
+      } catch (_) {
+        // 네트워크 오류 — 오감지 방지로 무시
+      } finally {
+        _pollingInProgress = false;
+      }
+    });
+  }
+
+  void _stopStatusPolling() {
+    _statusTimer?.cancel();
+    _statusTimer = null;
+  }
 
   @override
   void dispose() {
+    _stopStatusPolling();
     // fire-and-forget: 실패해도 앱 크래시 없음. 서버 타임아웃이 백업으로 동작.
     ApiService.terminateBrowseSession(widget.containerId, widget.networkName);
     super.dispose();
@@ -815,7 +860,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             }
           },
         ),
-        if (_isLoading && _errorMessage == null && !_sessionExpired)
+        if (_isLoading && _errorMessage == null && !_sessionExpired && !_threatDetected)
           Container(
             color: const Color(0xFF111827),
             child: const Center(
@@ -832,9 +877,64 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
               ),
             ),
           ),
-        if (_sessionExpired) _buildSessionExpiredOverlay(),
-        if (!_sessionExpired && _errorMessage != null) _buildErrorOverlay(),
+        if (_threatDetected) _buildThreatOverlay(),
+        if (!_threatDetected && _sessionExpired) _buildSessionExpiredOverlay(),
+        if (!_threatDetected && !_sessionExpired && _errorMessage != null) _buildErrorOverlay(),
       ],
+    );
+  }
+
+  /// DC-34 위협 자동 차단 오버레이 — CDP watchdog이 블랙리스트 히트/다운로드 감지 시 표시
+  Widget _buildThreatOverlay() {
+    final isDownload = _threatReason == 'download_attempt';
+    return Container(
+      color: const Color(0xFF111827),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.gpp_bad_rounded, color: Color(0xFFDC2626), size: 56),
+              const SizedBox(height: 20),
+              const Text(
+                '위협 자동 차단됨',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                isDownload
+                    ? '악성 파일 다운로드 시도가 감지되어\n세션을 자동으로 차단했어요.'
+                    : '이동한 주소가 알려진 위험 사이트로\n확인되어 세션을 자동으로 차단했어요.',
+                style: const TextStyle(
+                  color: Color(0xFF9CA3AF),
+                  fontSize: 14,
+                  height: 1.6,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 28),
+              ElevatedButton.icon(
+                onPressed: _exitWithVote,
+                icon: const Icon(Icons.home_rounded),
+                label: const Text('메인으로 돌아가기'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

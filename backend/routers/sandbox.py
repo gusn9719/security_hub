@@ -214,6 +214,46 @@ async def browse_create(http_request: Request, request: BrowseCreateRequest) -> 
     }
 
 
+@router.get("/browse/{container_id}/status")
+async def browse_status(container_id: str) -> dict:
+    """
+    7-A 세션의 상태를 반환한다. Flutter가 5초 간격으로 폴링해 위협 자동 차단을 감지한다.
+
+    DC-34: CDP watchdog이 위협을 감지하면 _threat_cache에 기록하고 세션을 종료한다.
+    Flutter는 threat_detected=True를 받으면 위협 차단 오버레이를 표시한다.
+
+    Returns:
+        dict:
+          active         — 세션 활성 여부
+          threat_detected — 위협 자동 감지 여부 (True이면 세션 강제 종료됨)
+          threat_reason  — "blacklist_hit" | "download_attempt" | ""
+          threat_url     — 위협 URL (있는 경우)
+    """
+    threat = browse_service._threat_cache.get(container_id)
+    if threat:
+        return {
+            "active": False,
+            "threat_detected": True,
+            "threat_reason": threat.get("threat_reason", ""),
+            "threat_url": threat.get("threat_url", ""),
+        }
+
+    if container_id in browse_service._active_sessions:
+        return {
+            "active": True,
+            "threat_detected": False,
+            "threat_reason": "",
+            "threat_url": "",
+        }
+
+    return {
+        "active": False,
+        "threat_detected": False,
+        "threat_reason": "",
+        "threat_url": "",
+    }
+
+
 @router.delete("/browse/{container_id}")
 async def browse_delete(
     container_id: str,
