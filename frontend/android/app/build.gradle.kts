@@ -30,18 +30,27 @@ android {
         versionName = flutter.versionName
 
         // AUTH-01: 카카오 SDK redirect 스킴은 'kakao{NATIVE_APP_KEY}://oauth' 다.
-        // 졸업작품 시연 단순화를 위해 default 키를 직접 박는다.
+        // 키는 저장소에 두지 않는다 — public github 노출 방지.
         //
-        // 노출 위험은 실질 0 — Android native key 는 APK 디컴파일 시 반드시
-        // 노출되는 값이고, 카카오 SDK 의 보안 모델은 '콘솔 등록 키해시 검증'
-        // 으로 강제된다. 키 자체 노출만으로 악용 불가.
-        // public git 푸시만 주의하면 된다.
+        // 주입 방법 (택 1):
+        //   1. ~/.gradle/gradle.properties 에 한 줄 (권장, 1회 셋업):
+        //        kakaoNativeKey=<카카오 네이티브 키>
+        //   2. 빌드 시 인자:
+        //        flutter run -- -PkakaoNativeKey=<키>
+        //   3. 환경변수:
+        //        ORG_GRADLE_PROJECT_kakaoNativeKey=<키>
         //
-        // 운영/배포 시 다른 키로 바꾸려면 -PkakaoNativeKey=... 또는
-        // ORG_GRADLE_PROJECT_kakaoNativeKey 환경변수로 오버라이드 가능.
-        manifestPlaceholders["kakaoNativeKey"] =
-            (project.findProperty("kakaoNativeKey") as String?
-                ?: "50f09a9edb8273c2690a09f0f5d18c65")
+        // 셋업 전체 절차는 docs/SETUP.md 참조.
+        // 키가 비어 있으면 의도적으로 빌드를 중단해 사고를 빌드 시점에 차단한다.
+        val kakaoKey = project.findProperty("kakaoNativeKey") as String? ?: ""
+        if (kakaoKey.isEmpty()) {
+            throw GradleException(
+                "kakaoNativeKey 가 설정되지 않았습니다. " +
+                "docs/SETUP.md 의 카카오 셋업 절차를 따르세요. " +
+                "(예: ~/.gradle/gradle.properties 에 kakaoNativeKey=<키> 추가)"
+            )
+        }
+        manifestPlaceholders["kakaoNativeKey"] = kakaoKey
     }
 
     buildTypes {

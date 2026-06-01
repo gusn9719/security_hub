@@ -21,6 +21,12 @@ data/raw/
 .cloudflared/*.json
 .cloudflared/config.yml
 
+# 카카오 SDK 키 — 외부 주입 전용 (docs/SETUP.md)
+# .kakao.env.example 을 복사해 .kakao.env 로 사용
+.kakao.env
+*.kakao.env
+!*.kakao.env.example
+
 # IDE / Tools
 .DS_Store
 *.log
