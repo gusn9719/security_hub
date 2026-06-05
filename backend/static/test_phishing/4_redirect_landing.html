@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>인증 완료</title>
+  <style>
+    body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
+    .box { background: white; padding: 48px 40px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.1); width: 340px; text-align: center; }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h2 { margin: 0 0 12px; color: #333; }
+    p { color: #888; font-size: 14px; line-height: 1.6; }
+    .chain { background: #f8f9fa; border-radius: 6px; padding: 16px; margin: 20px 0; text-align: left; font-size: 12px; color: #555; }
+    .chain div { padding: 3px 0; }
+    .arrow { color: #aaa; margin: 0 4px; }
+    .badge { font-size: 11px; color: #bbb; border-top: 1px solid #f0f0f0; padding-top: 14px; margin-top: 8px; }
+    code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="icon">✅</div>
+    <h2>인증이 완료되었습니다</h2>
+    <p>이 페이지는 HTTP 302 리다이렉트 체인의 최종 목적지입니다.</p>
+    <div class="chain">
+      <div><strong>리다이렉트 경로 (302×3)</strong></div>
+      <div style="margin-top:8px">
+        /redirect/start<span class="arrow">→</span>step2<span class="arrow">→</span>step3<span class="arrow">→</span>step4<span class="arrow">→</span>여기
+      </div>
+    </div>
+    <div class="badge">
+      [7-B 탐지 테스트 ④] <code>redirect_count ≥ 3</code> → <strong>+20점</strong><br>
+      <code>/test-phishing/redirect/start</code> 를 7-B에 입력하세요
+    </div>
+  </div>
+</body>
+</html>
