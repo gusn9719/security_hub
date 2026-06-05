@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>본인 인증 - 클립보드 확인</title>
+  <style>
+    body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f0f4ff; }
+    .box { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.1); width: 340px; text-align: center; }
+    .icon { font-size: 40px; margin-bottom: 16px; }
+    h2 { margin: 0 0 10px; color: #333; font-size: 18px; }
+    p { color: #666; font-size: 13px; line-height: 1.6; margin: 0 0 20px; }
+    button { width: 100%; padding: 13px; background: #3b82f6; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+    .status { margin-top: 14px; font-size: 13px; min-height: 18px; color: #22c55e; font-weight: 500; }
+    .badge { font-size: 11px; color: #bbb; border-top: 1px solid #f0f0f0; padding-top: 14px; margin-top: 20px; }
+    code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="icon">📋</div>
+    <h2>본인 인증</h2>
+    <p>보안을 위해 인증 코드를 클립보드에 복사한 후<br>아래 버튼을 눌러 붙여넣기 해주세요.</p>
+    <button onclick="readClipboard()">인증 코드 붙여넣기</button>
+    <div class="status" id="status"></div>
+    <div class="badge">
+      [7-B 탐지 테스트 ⑤] <code>clipboard_access</code> → <strong>+25점</strong><br>
+      페이지 로드 시 자동 실행 + 버튼 클릭 시 재실행
+    </div>
+  </div>
+
+  <script>
+    // Playwright가 주입한 navigator.clipboard getter를 건드리면
+    // window.__clipboardAccessed = true 가 세팅된다
+    function readClipboard() {
+      try {
+        navigator.clipboard.readText()
+          .then(function(text) {
+            document.getElementById('status').textContent = '✓ 클립보드 읽기 완료 (' + text.length + '자)';
+          })
+          .catch(function(e) {
+            document.getElementById('status').textContent = '✓ 클립보드 접근 시도됨 (읽기 거부)';
+          });
+      } catch (e) {
+        document.getElementById('status').textContent = '✓ 클립보드 접근 시도됨 (예외)';
+      }
+    }
+
+    // 페이지 로드 직후 자동 실행 — Playwright가 폼 주입 전 _analyze_dom()을 호출하므로
+    // 이 시점에 이미 __clipboardAccessed가 true가 되어야 탐지된다
+    window.addEventListener('load', function() {
+      readClipboard();
+    });
+  </script>
+</body>
+</html>

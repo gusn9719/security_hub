@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>보안 업데이트 설치 중...</title>
+  <style>
+    body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #0d1117; color: #e6edf3; }
+    .box { text-align: center; padding: 48px 40px; max-width: 360px; }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h2 { font-size: 20px; margin: 0 0 12px; }
+    p { color: #8b949e; font-size: 14px; margin: 0 0 28px; line-height: 1.6; }
+    .progress { width: 240px; height: 6px; background: #21262d; border-radius: 3px; margin: 0 auto 12px; overflow: hidden; }
+    .bar { height: 100%; background: linear-gradient(90deg, #238636, #2ea043); border-radius: 3px; animation: grow 3s ease forwards; }
+    @keyframes grow { from { width: 0 } to { width: 100% } }
+    .pct { font-size: 13px; color: #8b949e; }
+    .badge { margin-top: 32px; font-size: 11px; color: #484f58; border-top: 1px solid #21262d; padding-top: 16px; }
+    code { background: #161b22; padding: 2px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="icon">🔒</div>
+    <h2>보안 업데이트 설치 중...</h2>
+    <p>중요한 보안 패치를 적용하고 있습니다.<br>잠시 기다려 주세요.</p>
+    <div class="progress"><div class="bar"></div></div>
+    <div class="pct" id="pct">0%</div>
+    <div class="badge">
+      [7-B 탐지 테스트 ③] <code>auto_download</code> → <strong>+50점</strong><br>
+      페이지 로드 즉시 APK 다운로드 트리거 (Blob URL)
+    </div>
+  </div>
+
+  <script>
+    // 진행률 애니메이션
+    var p = 0;
+    var timer = setInterval(function() {
+      p = Math.min(p + Math.random() * 8, 100);
+      document.getElementById('pct').textContent = Math.floor(p) + '%';
+      if (p >= 100) clearInterval(timer);
+    }, 150);
+
+    // 페이지 로드 즉시 APK 다운로드 트리거
+    // Playwright page.on("download") 이벤트를 발생시킨다
+    (function triggerDownload() {
+      try {
+        // 가짜 APK 헤더 바이트 (실제 악성코드 아님)
+        var fakeApk = 'PK\x03\x04\x14\x00\x00\x00\x08\x00fake-apk-security-test';
+        var blob = new Blob([fakeApk], { type: 'application/vnd.android.package-archive' });
+        var objectUrl = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = 'security_update_v2.apk';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 2000);
+      } catch (e) {
+        console.warn('download trigger failed:', e);
+      }
+    })();
+  </script>
+</body>
+</html>

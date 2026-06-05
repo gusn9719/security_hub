@@ -37,12 +37,14 @@ if sys.platform == "win32":
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from routers import analyze
 from routers import auth as auth_router
 from routers import sandbox
+from routers import test_phishing as test_phishing_router
 from database.db_init import init_db
 from services import jwt_service
 from services.browse_service import shutdown_all_sessions, initialize_pool, cleanup_stale_networks
@@ -97,10 +99,14 @@ class DeviceUUIDMiddleware(BaseHTTPMiddleware):
     """
     _EXCLUDED = frozenset({"/docs", "/redoc", "/openapi.json"})
     _NOVNC_RE = re.compile(r"^/sandbox/browse/[^/]+/novnc(?:/|$)")
+    # 테스트 피싱 페이지 — 브라우저/Playwright가 UUID 헤더 없이 직접 접근
+    _TEST_PHISHING_RE = re.compile(r"^/test-phishing(?:/|$)")
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path in self._EXCLUDED or self._NOVNC_RE.match(path):
+        if (path in self._EXCLUDED
+                or self._NOVNC_RE.match(path)
+                or self._TEST_PHISHING_RE.match(path)):
             return await call_next(request)
 
         device_uuid = request.headers.get("X-Device-UUID")
@@ -184,6 +190,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     매 요청마다 재다운로드하면 초기 로딩이 10초 이상 걸리기 때문이다.
     """
     _NOVNC_PREFIX = "/sandbox/browse/"
+    _TEST_PHISHING_PREFIX = "/test-phishing"
     # 캐시를 허용하는 noVNC 정적 자산 확장자 (세션 데이터는 WS이므로 HTTP에 없음)
     _CACHEABLE_EXTS = frozenset({
         ".js", ".css", ".png", ".ico", ".gif",
@@ -206,8 +213,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "no-store"   # NF-12
 
         if not path.startswith(self._NOVNC_PREFIX):
-            response.headers["X-Frame-Options"]          = "DENY"
-            response.headers["Content-Security-Policy"]  = "default-src 'none'"
+            response.headers["X-Frame-Options"] = "DENY"
+            if path.startswith(self._TEST_PHISHING_PREFIX):
+                # 테스트 페이지는 인라인 스크립트·Blob URL·data: URI가 필요
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self' data: blob:; "
+                    "script-src 'unsafe-inline' 'self'; "
+                    "style-src 'unsafe-inline' 'self'"
+                )
+            else:
+                response.headers["Content-Security-Policy"] = "default-src 'none'"
         return response
 
 
@@ -383,3 +398,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 app.include_router(analyze.router)
 app.include_router(sandbox.router)
 app.include_router(auth_router.router)
+app.include_router(test_phishing_router.router)
+
+# 테스트 피싱 정적 파일 (라우터보다 나중에 mount해야 동적 경로가 우선)
+app.mount(
+    "/test-phishing",
+    StaticFiles(directory="static/test_phishing", html=True),
+    name="test-phishing-static",
+)
