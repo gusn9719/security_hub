@@ -23,15 +23,11 @@
 
 import asyncio
 import base64
-import json
 import logging
-import re
 import socket
 import ssl
+import threading
 from uuid import uuid4
-
-import httpx
-import websockets
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +47,108 @@ _POOL_PLACEHOLDER_URL = "about:blank"  # 워밍 시 Chromium에 열어두는 초
 _pool_idle: asyncio.Queue = asyncio.Queue()
 # asyncio 단일 스레드: await 없이 증감하므로 별도 락 불필요
 _pool_warming: int = 0
+
+# DC-34: CDP 실시간 이벤트 모니터링 스크립트.
+# container.exec_run() 으로 컨테이너 내부에서 실행된다.
+# localhost:9222 (loopback) 에 직접 접속하므로 --remote-debugging-address 불필요.
+# 이벤트 발생 시 stdout 에 한 줄씩 출력한다:
+#   CDP_READY                         — 연결 성공
+#   CDP_NO_TABS / CDP_HANDSHAKE_FAIL  — 실패
+#   NAVIGATE:{url}                    — 메인 프레임 탐색
+#   DOWNLOAD:{url}:{filename}         — 다운로드 시도
+_CDP_MONITOR_PY = (
+    "import json,socket,base64,os,sys,struct,time\n"
+    # tty=True 모드에서 출력이 즉시 전달되는지 확인하는 진단 라인
+    "print('EXEC_STARTED',flush=True)\n"
+    "import urllib.request as _ur\n"
+    # CDP 준비 대기 (최대 30초) — 풀 컨테이너는 이미 CDP 준비됨, kill 후 재시작 시 대기 필요
+    "ws_url='';dl=time.time()+30\n"
+    "while time.time()<dl:\n"
+    "    try:\n"
+    "        d=json.loads(_ur.urlopen('http://localhost:9222/json/list',timeout=2).read())\n"
+    "        for t in (d or []):\n"
+    "            if t.get('webSocketDebuggerUrl'):\n"
+    "                ws_url=t['webSocketDebuggerUrl'];break\n"
+    "        if ws_url:break\n"
+    "    except:pass\n"
+    "    time.sleep(2)\n"
+    "if not ws_url:print('CDP_NO_TABS',flush=True);sys.exit(1)\n"
+    # WebSocket 경로 추출
+    "idx=ws_url.find('/',ws_url.find('//')+2)\n"
+    "path=ws_url[idx:] if idx>=0 else '/'\n"
+    # WebSocket 핸드셰이크 — recv 루프에 명시적 타임아웃 추가
+    "try:\n"
+    "    s=socket.create_connection(('localhost',9222),timeout=10)\n"
+    "    s.settimeout(10)\n"
+    "    key=base64.b64encode(os.urandom(16)).decode()\n"
+    "    hs=(b'GET '+path.encode()+b' HTTP/1.1\\r\\n'\n"
+    "        b'Host: localhost:9222\\r\\n'\n"
+    "        b'Upgrade: websocket\\r\\n'\n"
+    "        b'Connection: Upgrade\\r\\n'\n"
+    "        b'Origin: http://localhost:9222\\r\\n'\n"
+    "        b'Sec-WebSocket-Key: '+key.encode()+b'\\r\\n'\n"
+    "        b'Sec-WebSocket-Version: 13\\r\\n\\r\\n')\n"
+    "    s.sendall(hs)\n"
+    "    buf=b''\n"
+    "    while b'\\r\\n\\r\\n' not in buf:\n"
+    "        c=s.recv(4096)\n"
+    "        if not c:raise RuntimeError('closed')\n"
+    "        buf+=c\n"
+    "    if b'101' not in buf:print('CDP_HANDSHAKE_FAIL',flush=True);sys.exit(1)\n"
+    "except Exception as e:print('CDP_CONNECT_ERROR:'+str(e),flush=True);sys.exit(1)\n"
+    "print('CDP_READY',flush=True)\n"
+    # WebSocket 프레임 전송 헬퍼 (마스킹 포함)
+    "def send(cid,m,p=None):\n"
+    "    msg=json.dumps({'id':cid,'method':m,'params':p or{}}).encode()\n"
+    "    mk=os.urandom(4);n=len(msg)\n"
+    "    if n<126:h=bytes([0x81,0x80|n])+mk\n"
+    "    elif n<65536:h=bytes([0x81,0xFE])+struct.pack('>H',n)+mk\n"
+    "    else:h=bytes([0x81,0xFF])+struct.pack('>Q',n)+mk\n"
+    "    s.sendall(h+bytes(x^mk[i%4]for i,x in enumerate(msg)))\n"
+    # WebSocket 프레임 수신 헬퍼
+    "def recvn(n):\n"
+    "    d=b''\n"
+    "    while len(d)<n:\n"
+    "        c=s.recv(n-len(d))\n"
+    "        if not c:raise ConnectionError\n"
+    "        d+=c\n"
+    "    return d\n"
+    "def readframe():\n"
+    "    h=recvn(2);op=h[0]&0xF;msk=(h[1]&0x80)!=0;n=h[1]&0x7F\n"
+    "    if n==126:n=struct.unpack('>H',recvn(2))[0]\n"
+    "    elif n==127:n=struct.unpack('>Q',recvn(8))[0]\n"
+    "    mk=recvn(4) if msk else b''\n"
+    "    p=recvn(n)\n"
+    "    return op,(bytes(b^mk[i%4]for i,b in enumerate(p)) if msk else p)\n"
+    # Page 이벤트 활성화 + 다운로드 이벤트 활성화
+    # behavior='deny'는 일부 kasmweb Chromium에서 페이지 로딩을 막는 버그가 있음.
+    # 'allow'로 다운로드를 허용하되 downloadPath를 /tmp로 지정해 이벤트만 수신한다.
+    # (컨테이너는 임시이므로 /tmp에 파일이 저장돼도 무방함)
+    "send(1,'Page.enable')\n"
+    "send(2,'Page.setDownloadBehavior',{'behavior':'allow','downloadPath':'/tmp'})\n"
+    "print('CDP_SETUP_DONE',flush=True)\n"
+    # 이벤트 루프
+    "s.settimeout(60)\n"
+    "while True:\n"
+    "    try:op,pl=readframe()\n"
+    "    except socket.timeout:s.sendall(bytes([0x89,0x80])+os.urandom(4));continue\n"
+    "    except:break\n"
+    "    if op==8:break\n"
+    "    if op==9:s.sendall(bytes([0x8A,0x80])+os.urandom(4));continue\n"
+    "    if op not in(1,2):continue\n"
+    "    try:ev=json.loads(pl)\n"
+    "    except:continue\n"
+    "    mth=ev.get('method','')\n"
+    "    if mth=='Page.frameNavigated':\n"
+    "        fr=ev.get('params',{}).get('frame',{})\n"
+    "        if 'parentId' not in fr:\n"
+    "            url=fr.get('url','')\n"
+    "            if url and not url.startswith(('about:','chrome:','data:')):\n"
+    "                print('NAVIGATE:'+url,flush=True)\n"
+    "    elif mth=='Page.downloadWillBegin':\n"
+    "        p2=ev.get('params',{})\n"
+    "        print('DOWNLOAD:'+p2.get('url','')+':'+p2.get('suggestedFilename',''),flush=True)\n"
+)
 
 # CDP(Chrome DevTools Protocol) Page.navigate 스크립트.
 # 컨테이너 내부에서 python3 -c 로 실행된다.
@@ -641,6 +739,79 @@ async def _auto_terminate(container_id: str, network_name: str) -> None:
     logger.info("[browse] 세션 타임아웃 자동 종료: container=%s", container_id[:12])
 
 
+_CDP_SCREENSHOT_PY = (
+    "import json,socket,base64,os,struct\n"
+    "import urllib.request as _r\n"
+    "try:\n"
+    "    d=json.loads(_r.urlopen('http://localhost:9222/json/list',timeout=2).read())\n"
+    "    pg=[t for t in(d or[])if t.get('type')=='page'and t.get('webSocketDebuggerUrl')]\n"
+    "    if not pg:raise RuntimeError('no page')\n"
+    "    ws=pg[0]['webSocketDebuggerUrl']\n"
+    "    idx=ws.find('/',ws.find('//')+2);p=ws[idx:]if idx>=0 else'/'\n"
+    "    s=socket.create_connection(('localhost',9222),timeout=5)\n"
+    "    k=base64.b64encode(os.urandom(16)).decode()\n"
+    "    hs=('GET '+p+' HTTP/1.1\\r\\nHost: localhost:9222\\r\\nUpgrade: websocket\\r\\n'\n"
+    "        'Connection: Upgrade\\r\\nOrigin: http://localhost:9222\\r\\n'\n"
+    "        'Sec-WebSocket-Key: '+k+'\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n')\n"
+    "    s.sendall(hs.encode())\n"
+    "    b=b'';s.settimeout(5)\n"
+    "    while b'\\r\\n\\r\\n'not in b:\n"
+    "        c=s.recv(4096)\n"
+    "        if not c:raise RuntimeError('closed')\n"
+    "        b+=c\n"
+    "    if b'101'not in b:raise RuntimeError('rejected')\n"
+    "    m=json.dumps({'id':1,'method':'Page.captureScreenshot',\n"
+    "        'params':{'format':'jpeg','quality':50}}).encode()\n"
+    "    mk=os.urandom(4);n=len(m)\n"
+    "    if n<126:hh=bytes([0x81,0x80|n])+mk\n"
+    "    elif n<65536:hh=bytes([0x81,0xFE])+struct.pack('>H',n)+mk\n"
+    "    else:hh=bytes([0x81,0xFF])+struct.pack('>Q',n)+mk\n"
+    "    s.sendall(hh+bytes(x^mk[i%4]for i,x in enumerate(m)))\n"
+    "    def recvn(x):\n"
+    "        d=b''\n"
+    "        while len(d)<x:\n"
+    "            c=s.recv(x-len(d))\n"
+    "            if not c:raise ConnectionError\n"
+    "            d+=c\n"
+    "        return d\n"
+    "    s.settimeout(30)\n"
+    "    while True:\n"
+    "        h2=recvn(2);op=h2[0]&0xF;n2=h2[1]&0x7F\n"
+    "        if n2==126:n2=struct.unpack('>H',recvn(2))[0]\n"
+    "        elif n2==127:n2=struct.unpack('>Q',recvn(8))[0]\n"
+    "        p2=recvn(n2)\n"
+    "        if op not in(1,2):continue\n"
+    "        ev=json.loads(p2)\n"
+    "        if ev.get('id')==1:\n"
+    "            img=ev.get('result',{}).get('data','')\n"
+    "            if img:print('SCREENSHOT:'+img,flush=True)\n"
+    "            break\n"
+    "    s.close()\n"
+    "except Exception as e:print('SCREENSHOT_ERROR:'+str(e),flush=True)\n"
+)
+
+
+async def _take_cdp_screenshot(container) -> str | None:
+    """차단 직전 피싱 사이트 화면을 JPEG base64로 캡처한다."""
+    if container is None:
+        return None
+    try:
+        result = await asyncio.to_thread(
+            container.exec_run,
+            ["python3", "-c", _CDP_SCREENSHOT_PY],
+        )
+        for line in (result.output or b"").decode(errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("SCREENSHOT:"):
+                logger.info("[browse] 스크린샷 캡처 완료")
+                return line[len("SCREENSHOT:"):]
+            if line.startswith("SCREENSHOT_ERROR:"):
+                logger.debug("[browse] 스크린샷 오류: %s", line)
+    except Exception as e:
+        logger.debug("[browse] 스크린샷 실패: %s", e)
+    return None
+
+
 async def _wait_for_cdp_ready(container, timeout_sec: int = 20) -> bool:
     """
     컨테이너 내 CDP 포트(9222)가 HTTP 요청에 응답할 때까지 대기한다.
@@ -705,11 +876,19 @@ async def _do_kiosk_redirect(container, url: str) -> bool:
     # sed: "$@" → kiosk/debug flags "$@" (이미 패치된 경우 grep -q 로 스킵)
     # |  구분자 사용: URL 내 / 가 있어도 안전
     # &  교체문의 &: sed 에서 "매칭된 문자열" 즉 "$@" 로 치환
+    # DC-34: --remote-debugging-address=0.0.0.0 추가.
+    # Chromium 기본값은 127.0.0.1 바인딩 → Docker 포트 매핑이 컨테이너 eth0(172.17.x.x)
+    # 방향으로 DNAT하므로 loopback에만 열린 CDP에 호스트가 도달하지 못함.
+    # 0.0.0.0 바인딩으로 변경해 호스트 → mapped port → CDP 경로를 개통.
+    # idempotent 판정 기준을 'remote-debugging-address'로 교체:
+    #   - 이전 패치(주소 없는 버전)가 적용된 컨테이너는 sed 재실행 → "$@"가 이미
+    #     치환돼 있으면 no-op이므로 안전. 신규 컨테이너는 정상 패치.
     patch_cmd = (
-        "grep -q 'remote-debugging-port' /usr/bin/chromium-browser 2>/dev/null"
+        "grep -q 'remote-debugging-address' /usr/bin/chromium-browser 2>/dev/null"
         " || sed -i"
         " 's|\"\\$@\"|--kiosk --disable-infobars --noerrdialogs"
         " --disable-translate --remote-debugging-port=9222"
+        " --remote-debugging-address=0.0.0.0"
         " --remote-allow-origins=http://localhost:9222 &|g'"
         " /usr/bin/chromium-browser 2>/dev/null"
         " && echo wrapper_patched || echo wrapper_already_patched"
@@ -804,8 +983,7 @@ async def _create_warmed_session(
             BROWSE_IMAGE,
             detach=True,
             remove=True,
-            # DC-34: 9222/tcp 노출 — 호스트에서 CDP WebSocket으로 직접 연결하기 위함
-            ports={BROWSE_PORT: None, "9222/tcp": None},
+            ports={BROWSE_PORT: None},
             environment={
                 "VNC_PW": vnc_pw,
                 "LAUNCH_URL": _POOL_PLACEHOLDER_URL,
@@ -828,9 +1006,6 @@ async def _create_warmed_session(
         if not host_port:
             raise RuntimeError("컨테이너 포트 매핑을 읽을 수 없습니다.")
 
-        cdp_port_bindings = container.ports.get("9222/tcp") or []
-        cdp_host_port = int(cdp_port_bindings[0]["HostPort"]) if cdp_port_bindings else None
-
         ready = await _wait_for_http_ready(host_port, container=container, vnc_pw=vnc_pw)
         if not ready:
             raise RuntimeError(
@@ -851,8 +1026,8 @@ async def _create_warmed_session(
 
         container_id = container.id
         logger.info(
-            "[pool] 워밍 완료: container=%s, proxy=127.0.0.1:%d, cdp_host_port=%s",
-            container_id[:12], proxy_port, cdp_host_port,
+            "[pool] 워밍 완료: container=%s, proxy=127.0.0.1:%d",
+            container_id[:12], proxy_port,
         )
         return {
             "container": container,
@@ -863,7 +1038,6 @@ async def _create_warmed_session(
             "proxy_task": proxy_task,
             "kasm_host_port": kasm_host_port,
             "vnc_pw": vnc_pw,
-            "cdp_host_port": cdp_host_port,
         }
 
     except BaseException as _exc:
@@ -997,12 +1171,7 @@ async def create_browse_session(
             pool_session = None
 
     if pool_session is not None:
-        # URL 리다이렉트: CDP 탐색 (CDP 불가 시 kill+restart 폴백)
-        killed = await _do_kiosk_redirect(pool_session["container"], url)
-        if killed:
-            # kill+restart 후 Chromium 기동 시간 확보 (CDP 성공 시엔 불필요)
-            await asyncio.sleep(1)
-
+        # 풀 컨테이너: 래퍼 패치·CDP 준비는 워밍 시 완료됨.
         timeout_task = asyncio.create_task(
             _auto_terminate(container_id, pool_session["network_name"])
         )
@@ -1011,9 +1180,23 @@ async def create_browse_session(
             "timeout_task": timeout_task,
         }
 
-        # DC-34: CDP 위협 감지 watchdog 시작 — 태스크 저장해 종료 시 취소 가능하게 함
-        watchdog_task = asyncio.create_task(start_cdp_watchdog(container_id))
+        # DC-34: watchdog 시작 → CDP 설정 완료(asyncio.Event) 대기 → 탐색
+        # 이 순서가 보장되어야 다운로드 트리거 시 Page.downloadWillBegin이 발동함.
+        cdp_ready_event = asyncio.Event()
+        watchdog_task = asyncio.create_task(
+            start_cdp_watchdog(container_id, cdp_ready_event=cdp_ready_event)
+        )
         _active_sessions[container_id]["watchdog_task"] = watchdog_task
+
+        # watchdog이 Page.enable + Page.setDownloadBehavior 완료할 때까지 대기 (최대 15초)
+        try:
+            await asyncio.wait_for(cdp_ready_event.wait(), timeout=15.0)
+            logger.info("[pool] CDP 설정 확인 → 탐색 시작: container=%s", container_id[:12])
+        except asyncio.TimeoutError:
+            logger.warning("[pool] CDP 설정 이벤트 타임아웃 — 탐색 강행: container=%s", container_id[:12])
+
+        # Page.setDownloadBehavior 설정 완료 후 탐색 → race condition 없음
+        await _do_kiosk_redirect(pool_session["container"], url)
 
         # 비동기 풀 보충 (현재 요청을 블록하지 않음)
         asyncio.create_task(_replenish_pool())
@@ -1026,6 +1209,7 @@ async def create_browse_session(
             "container_id": container_id,
             "proxy_port": pool_session["proxy_port"],
             "network_name": pool_session["network_name"],
+            "vnc_pw": pool_session["vnc_pw"],
         }
 
     # ── 2. 온디맨드 폴백 (풀 miss 또는 idle 컨테이너 상태 이상) ──────────────
@@ -1051,11 +1235,10 @@ async def create_browse_session(
             BROWSE_IMAGE,
             detach=True,
             remove=True,
-            # DC-34: 9222/tcp 노출 — 호스트에서 CDP WebSocket으로 직접 연결하기 위함
-            ports={BROWSE_PORT: None, "9222/tcp": None},
+            ports={BROWSE_PORT: None},
             environment={
                 "VNC_PW": vnc_pw,
-                "LAUNCH_URL": url,
+                "LAUNCH_URL": _POOL_PLACEHOLDER_URL,  # about:blank — watchdog이 탐색
                 "RESOLUTION": resolution,
                 "CHROMIUM_FLAGS": "--kiosk --no-first-run --disable-infobars",
                 "KASM_CHROME_FLAGS": "--kiosk --no-first-run --disable-infobars",
@@ -1072,9 +1255,6 @@ async def create_browse_session(
         if not host_port:
             raise RuntimeError("컨테이너 포트 매핑을 읽을 수 없습니다.")
 
-        cdp_port_bindings = container.ports.get("9222/tcp") or []
-        cdp_host_port = int(cdp_port_bindings[0]["HostPort"]) if cdp_port_bindings else None
-
         ready = await _wait_for_http_ready(host_port, container=container, vnc_pw=vnc_pw)
         if not ready:
             raise RuntimeError(
@@ -1083,8 +1263,8 @@ async def create_browse_session(
 
         await _wait_for_host_port(int(host_port))
 
-        await _do_kiosk_redirect(container, url)
-        # 온디맨드 경로: Chromium은 LAUNCH_URL=url 로 이미 기동되어 있으므로 sleep 불필요
+        # 래퍼 패치 전용 (about:blank → CDP 포트 활성화, Chromium 재시작 위임)
+        await _do_kiosk_redirect(container, _POOL_PLACEHOLDER_URL)
 
         kasm_host_port = int(host_port)
         proxy_port, proxy_task = await _start_ssl_strip_proxy(kasm_host_port, vnc_pw)
@@ -1100,16 +1280,26 @@ async def create_browse_session(
             "proxy_port": proxy_port,
             "kasm_host_port": kasm_host_port,
             "vnc_pw": vnc_pw,
-            "cdp_host_port": cdp_host_port,
         }
 
-        # DC-34: CDP 위협 감지 watchdog 시작 — 태스크 저장해 종료 시 취소 가능하게 함
-        watchdog_task = asyncio.create_task(start_cdp_watchdog(container_id))
+        # DC-34: watchdog 시작 → CDP 설정 완료 대기(최대 30초) → 탐색
+        cdp_ready_event = asyncio.Event()
+        watchdog_task = asyncio.create_task(
+            start_cdp_watchdog(container_id, cdp_ready_event=cdp_ready_event)
+        )
         _active_sessions[container_id]["watchdog_task"] = watchdog_task
 
+        try:
+            await asyncio.wait_for(cdp_ready_event.wait(), timeout=30.0)
+            logger.info("[browse] CDP 설정 확인 → 탐색 시작: container=%s", container_id[:12])
+        except asyncio.TimeoutError:
+            logger.warning("[browse] CDP 설정 이벤트 타임아웃 — 탐색 강행: container=%s", container_id[:12])
+
+        await _do_kiosk_redirect(container, url)
+
         logger.info(
-            "[browse] 온디맨드 생성 완료: container=%s, proxy=127.0.0.1:%d, kasm_port=%d, cdp_port=%s",
-            container_id[:12], proxy_port, kasm_host_port, cdp_host_port,
+            "[browse] 온디맨드 생성 완료: container=%s, proxy=127.0.0.1:%d, kasm_port=%d",
+            container_id[:12], proxy_port, kasm_host_port,
         )
         # 온디맨드 성공 직후 풀 보충 트리거: pool miss 구간을 최소화한다
         asyncio.create_task(_replenish_pool())
@@ -1117,6 +1307,7 @@ async def create_browse_session(
             "container_id": container_id,
             "proxy_port": proxy_port,
             "network_name": network.name,
+            "vnc_pw": vnc_pw,
         }
 
     except Exception as e:
@@ -1138,13 +1329,24 @@ async def create_browse_session(
 # DC-34: CDP 실시간 위협 감지 watchdog
 # ---------------------------------------------------------------------------
 
-async def start_cdp_watchdog(container_id: str) -> None:
+async def start_cdp_watchdog(
+    container_id: str,
+    cdp_ready_event: asyncio.Event | None = None,
+) -> None:
     """
-    CDP(Chrome DevTools Protocol)로 7-A 세션의 탐색 URL을 실시간 감시한다.
+    컨테이너 내부에서 _CDP_MONITOR_PY 스크립트를 exec_run으로 실행해
+    CDP 이벤트를 실시간 감시한다 (DC-34).
 
-    - Page.frameNavigated: 이동한 주소를 블랙리스트와 대조 → 히트 시 즉시 세션 종료
-    - Page.downloadWillBegin: 파일 다운로드 시도 감지 → 즉시 세션 종료
-    위협 감지 시 _threat_cache에 기록해 Flutter 상태 폴링이 조회할 수 있게 한다.
+    cdp_ready_event가 주어지면 Page.enable + Page.setDownloadBehavior 설정 완료
+    (CDP_SETUP_DONE 수신) 시 이벤트를 set한다.
+    호출측은 이 이벤트를 기다린 후 _do_kiosk_redirect로 탐색하므로
+    탐색이 항상 setDownloadBehavior 이후에 발생한다 (race condition 방지).
+
+    [현재 방식]
+    container.exec_run(stream=True) → 컨테이너 내부 python3 → localhost:9222
+    기존 _CDP_NAVIGATE_PY 와 동일한 경로이므로 항상 동작한다.
+    스트림 스레드가 이벤트를 asyncio.Queue 로 전달하고,
+    메인 코루틴이 큐를 소비해 블랙리스트 검사 및 세션 종료를 처리한다.
     """
     from database.blacklist_service import check_blacklist
 
@@ -1152,151 +1354,146 @@ async def start_cdp_watchdog(container_id: str) -> None:
     if not session:
         return
 
-    cdp_host_port = session.get("cdp_host_port")
-    if not cdp_host_port:
-        logger.warning("[cdp-watchdog] CDP 포트 없음 — watchdog 스킵: %s", container_id[:12])
+    container = session.get("container")
+    if container is None:
+        logger.warning("[cdp-watchdog] 컨테이너 없음 — watchdog 스킵: %s", container_id[:12])
         return
 
-    logger.info(
-        "[cdp-watchdog] 시작: container=%s, cdp_port=%d", container_id[:12], cdp_host_port
+    logger.info("[cdp-watchdog] 시작: container=%s (exec 방식)", container_id[:12])
+
+    loop = asyncio.get_running_loop()
+    event_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    def _stream_worker() -> None:
+        """컨테이너 내부 모니터 스크립트를 실행하고 stdout 줄을 이벤트 큐에 전달한다.
+
+        tty=True: Docker non-TTY 모드의 내부 버퍼링을 우회한다.
+        non-TTY 모드에서는 작은 출력(예: 'CDP_READY' 9바이트)이 Docker 내부 버퍼에
+        쌓여 프로세스 종료 전까지 호스트로 전달되지 않는다.
+        tty=True 시 멀티플렉스 헤더 없이 원시 바이트를 즉시 전달한다.
+        """
+        try:
+            result = container.exec_run(
+                ["python3", "-u", "-c", _CDP_MONITOR_PY],
+                stream=True,
+                tty=True,     # 버퍼링 없이 즉시 전달 — 핵심 수정
+            )
+            for chunk in result.output:
+                if chunk:
+                    for line in chunk.decode(errors="replace").splitlines():
+                        line = line.strip()
+                        if line:
+                            loop.call_soon_threadsafe(event_queue.put_nowait, line)
+        except Exception as exc:
+            loop.call_soon_threadsafe(event_queue.put_nowait, f"STREAM_ERROR:{exc}")
+        finally:
+            loop.call_soon_threadsafe(event_queue.put_nowait, None)  # sentinel
+
+    thread = threading.Thread(
+        target=_stream_worker, daemon=True, name=f"cdp-{container_id[:8]}"
     )
-
-    # Chromium이 --remote-debugging-port=9222 로 기동될 때까지 대기 (최대 30초)
-    tabs: list[dict] = []
-    _CDP_READY_TIMEOUT = 30
-    _loop = asyncio.get_running_loop()
-    deadline = _loop.time() + _CDP_READY_TIMEOUT
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        while _loop.time() < deadline:
-            if container_id not in _active_sessions:
-                return
-            try:
-                resp = await client.get(
-                    f"http://127.0.0.1:{cdp_host_port}/json/list", timeout=3.0
-                )
-                data = resp.json()
-                if data:
-                    tabs = data
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(2)
-
-    if not tabs:
-        logger.warning("[cdp-watchdog] CDP 탭 없음 — watchdog 스킵: %s", container_id[:12])
-        return
-
-    # webSocketDebuggerUrl의 내부 주소(127.0.0.1:9222)를 호스트 매핑 포트로 교체
-    ws_debug_url = tabs[0].get("webSocketDebuggerUrl", "")
-    if not ws_debug_url:
-        logger.warning(
-            "[cdp-watchdog] webSocketDebuggerUrl 없음 — watchdog 스킵: %s", container_id[:12]
-        )
-        return
-    ws_url = re.sub(r"^ws://[^/]+", f"ws://127.0.0.1:{cdp_host_port}", ws_debug_url)
-    logger.info("[cdp-watchdog] CDP WS 연결: %s", ws_url)
+    thread.start()
 
     try:
-        async with websockets.connect(
-            ws_url,
-            open_timeout=15,
-            ping_interval=20,
-            max_size=4 * 1024 * 1024,
-            # Chromium의 --remote-allow-origins=http://localhost:9222 설정에 대응.
-            # Python 클라이언트는 Origin 헤더를 기본으로 보내지 않으므로 명시 주입.
-            additional_headers={"Origin": "http://localhost:9222"},
-        ) as cdp_ws:
-            # Page 도메인 이벤트 활성화
-            await cdp_ws.send(json.dumps({"id": 1, "method": "Page.enable", "params": {}}))
-            # behavior="deny": 다운로드 차단 + Page.downloadWillBegin 이벤트 활성화
-            await cdp_ws.send(json.dumps({
-                "id": 2,
-                "method": "Page.setDownloadBehavior",
-                "params": {"behavior": "deny"},
-            }))
-            logger.info("[cdp-watchdog] 감시 중: %s", container_id[:12])
+        while True:
+            if container_id not in _active_sessions:
+                break
 
-            async for raw_msg in cdp_ws:
-                if container_id not in _active_sessions:
-                    break  # 세션이 외부에서 종료됨
+            try:
+                line = await asyncio.wait_for(event_queue.get(), timeout=35.0)
+            except asyncio.TimeoutError:
+                logger.warning("[cdp-watchdog] 타임아웃: %s", container_id[:12])
+                break
 
-                try:
-                    event = json.loads(raw_msg)
-                except Exception:
+            if line is None:
+                logger.info("[cdp-watchdog] 스트림 종료: %s", container_id[:12])
+                break
+
+            # ── CDP 초기화 상태 ────────────────────────────────────────────
+            if line == "CDP_READY":
+                logger.info("[cdp-watchdog] CDP 연결됨: %s", container_id[:12])
+
+            elif line == "CDP_SETUP_DONE":
+                # Page.enable + Page.setDownloadBehavior 완료 → 호출측이 탐색해도 안전
+                logger.info("[cdp-watchdog] CDP 설정 완료 (이벤트 구독 준비): %s", container_id[:12])
+                if cdp_ready_event is not None:
+                    cdp_ready_event.set()
+
+            elif line in ("CDP_NO_TABS", "CDP_HANDSHAKE_FAIL") or line.startswith("CDP_CONNECT_ERROR:"):
+                logger.warning("[cdp-watchdog] CDP 초기화 실패(%s): %s", line, container_id[:12])
+                if cdp_ready_event is not None:
+                    cdp_ready_event.set()  # 실패여도 호출측 블록 방지
+                break
+
+            # ── 탐색 감지 ──────────────────────────────────────────────────
+            elif line.startswith("NAVIGATE:"):
+                nav_url = line[len("NAVIGATE:"):]
+                if not nav_url:
                     continue
 
-                method = event.get("method", "")
+                curr = _active_sessions.get(container_id)
+                if curr is not None:
+                    curr.setdefault("visited_urls", []).append(nav_url)
 
-                # ── 탐색 감지 ────────────────────────────────────────────────
-                if method == "Page.frameNavigated":
-                    frame = event.get("params", {}).get("frame", {})
-                    # 메인 프레임만 검사 — parentId가 없으면 최상위 프레임
-                    if "parentId" in frame:
-                        continue
-                    nav_url = frame.get("url", "")
-                    if not nav_url or nav_url.startswith(("about:", "chrome:", "data:")):
-                        continue
+                logger.info(
+                    "[cdp-watchdog] 탐색 감지: container=%s url=%.80s",
+                    container_id[:12], nav_url,
+                )
 
-                    # visited_urls 기록 (sandbox_results 저장용)
-                    curr = _active_sessions.get(container_id)
-                    if curr is not None:
-                        curr.setdefault("visited_urls", []).append(nav_url)
-
-                    logger.info(
-                        "[cdp-watchdog] 탐색 감지: container=%s url=%.80s",
-                        container_id[:12], nav_url,
-                    )
-
-                    # 블랙리스트 실시간 검사
-                    hit = await asyncio.to_thread(check_blacklist, [nav_url])
-                    if hit:
-                        logger.warning(
-                            "[cdp-watchdog] 블랙리스트 히트 — 자동 차단: %.80s", nav_url
-                        )
-                        # check_blacklist 동안 세션이 종료됐을 수 있으므로 재확인
-                        curr = _active_sessions.get(container_id)
-                        if curr is None:
-                            break  # 이미 종료됨 — 이중 terminate 방지
-                        nw = curr.get("network_name", "")
-                        _threat_cache[container_id] = {
-                            "threat_detected": True,
-                            "threat_reason": "blacklist_hit",
-                            "threat_url": nav_url,
-                        }
-                        await terminate_browse_session(container_id, nw)
-                        break
-
-                # ── 다운로드 시도 감지 ────────────────────────────────────────
-                elif method == "Page.downloadWillBegin":
-                    params = event.get("params", {})
-                    dl_url = params.get("url", "")
-                    filename = params.get("suggestedFilename", "")
-                    logger.warning(
-                        "[cdp-watchdog] 다운로드 시도 — 자동 차단: url=%.80s file=%s",
-                        dl_url, filename,
-                    )
+                # 블랙리스트 실시간 검사
+                hit = await asyncio.to_thread(check_blacklist, [nav_url])
+                if hit:
+                    logger.warning("[cdp-watchdog] 블랙리스트 히트 — 자동 차단: %.80s", nav_url)
                     curr = _active_sessions.get(container_id)
                     if curr is None:
-                        break  # 이미 종료됨
+                        break  # 이중 terminate 방지
                     nw = curr.get("network_name", "")
+                    screenshot = await _take_cdp_screenshot(curr.get("container"))
                     _threat_cache[container_id] = {
                         "threat_detected": True,
-                        "threat_reason": "download_attempt",
-                        "threat_url": dl_url,
+                        "threat_reason": "blacklist_hit",
+                        "threat_url": nav_url,
+                        "filename": "",
+                        "screenshot": screenshot,
                     }
                     await terminate_browse_session(container_id, nw)
                     break
 
+            # ── 다운로드 시도 감지 ─────────────────────────────────────────
+            elif line.startswith("DOWNLOAD:"):
+                rest = line[len("DOWNLOAD:"):]
+                parts = rest.split(":", 1)
+                dl_url = parts[0]
+                filename = parts[1] if len(parts) > 1 else ""
+                logger.warning(
+                    "[cdp-watchdog] 다운로드 시도 — 자동 차단: url=%.80s file=%s",
+                    dl_url, filename,
+                )
+                curr = _active_sessions.get(container_id)
+                if curr is None:
+                    break
+                nw = curr.get("network_name", "")
+                screenshot = await _take_cdp_screenshot(curr.get("container"))
+                _threat_cache[container_id] = {
+                    "threat_detected": True,
+                    "threat_reason": "download_attempt",
+                    "threat_url": dl_url,
+                    "filename": filename,
+                    "screenshot": screenshot,
+                }
+                await terminate_browse_session(container_id, nw)
+                break
+
+            elif line.startswith("STREAM_ERROR:"):
+                logger.warning("[cdp-watchdog] 스트림 오류: %s — %s", container_id[:12], line)
+                break
+
     except asyncio.CancelledError:
         raise
-    except Exception as e:
-        logger.warning(
-            "[cdp-watchdog] 오류 (watchdog 종료): container=%s — %s", container_id[:12], e
-        )
+    except Exception as exc:
+        logger.warning("[cdp-watchdog] 오류: %s — %s", container_id[:12], exc)
     finally:
         logger.info("[cdp-watchdog] 종료: container=%s", container_id[:12])
-        # _threat_cache 5분 후 자동 정리.
-        # 서버 종료 시 이벤트 루프가 닫혀 create_task가 RuntimeError를 낼 수 있으므로 방어.
         if container_id in _threat_cache:
             try:
                 async def _cleanup_threat(cid: str = container_id) -> None:
