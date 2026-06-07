@@ -13,7 +13,9 @@
 // wss:// 로 연결하는 경우에도 자체서명 인증서 거부가 발생하지 않도록 한다.
 // =============================================================================
 
+import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -52,9 +54,62 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
   bool _voteDone = false;
   bool _loadStarted = false;
 
+  // DC-34: 위협 자동 차단 상태
+  bool _threatDetected = false;
+  String _threatReason = '';
+  String _filename = '';
+  String? _screenshot;
+  Timer? _statusTimer;
+  bool _pollingInProgress = false;  // async 콜백 중첩 방지
+
+  @override
+  void initState() {
+    super.initState();
+    // 화면 진입 즉시 상태 확인 (차단이 세션 생성 직후 발생했을 때 빠른 감지)
+    WidgetsBinding.instance.addPostFrameCallback((_) => _pollStatus());
+    _startStatusPolling();
+  }
+
+  Future<void> _pollStatus() async {
+    if (_pollingInProgress) return;
+    if (!mounted || _sessionExpired || _threatDetected) {
+      _stopStatusPolling();
+      return;
+    }
+    _pollingInProgress = true;
+    try {
+      final status = await ApiService.getBrowseSessionStatus(widget.containerId);
+      if (!mounted) return;
+      if (status['threat_detected'] == true) {
+        _stopStatusPolling();
+        setState(() {
+          _threatDetected = true;
+          _threatReason = (status['threat_reason'] as String?) ?? '';
+          _filename = (status['filename'] as String?) ?? '';
+          final raw = (status['screenshot'] as String?) ?? '';
+          _screenshot = raw.isNotEmpty ? raw : null;
+        });
+      }
+    } catch (_) {
+      // 네트워크 오류 — 오감지 방지로 무시
+    } finally {
+      _pollingInProgress = false;
+    }
+  }
+
+  void _startStatusPolling() {
+    // 2초 간격으로 폴링 (기존 5초에서 단축)
+    _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) => _pollStatus());
+  }
+
+  void _stopStatusPolling() {
+    _statusTimer?.cancel();
+    _statusTimer = null;
+  }
 
   @override
   void dispose() {
+    _stopStatusPolling();
     // fire-and-forget: 실패해도 앱 크래시 없음. 서버 타임아웃이 백업으로 동작.
     ApiService.terminateBrowseSession(widget.containerId, widget.networkName);
     super.dispose();
@@ -815,7 +870,7 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
             }
           },
         ),
-        if (_isLoading && _errorMessage == null && !_sessionExpired)
+        if (_isLoading && _errorMessage == null && !_sessionExpired && !_threatDetected)
           Container(
             color: const Color(0xFF111827),
             child: const Center(
@@ -832,9 +887,193 @@ class _SandboxBrowseScreenState extends State<SandboxBrowseScreen> {
               ),
             ),
           ),
-        if (_sessionExpired) _buildSessionExpiredOverlay(),
-        if (!_sessionExpired && _errorMessage != null) _buildErrorOverlay(),
+        if (_threatDetected) _buildThreatOverlay(),
+        if (!_threatDetected && _sessionExpired) _buildSessionExpiredOverlay(),
+        if (!_threatDetected && !_sessionExpired && _errorMessage != null) _buildErrorOverlay(),
       ],
+    );
+  }
+
+  /// 차단 당시 스크린샷을 전체화면으로 열고 InteractiveViewer로 핀치줌을 지원한다.
+  void _openFullScreenShot() {
+    if (_screenshot == null) return;
+    final bytes = base64Decode(_screenshot!);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+            title: const Text(
+              '차단 당시 사이트 화면',
+              style: TextStyle(fontSize: 14, color: Colors.white),
+            ),
+            leading: const BackButton(color: Colors.white),
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 6.0,
+              child: Image.memory(
+                bytes,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image_outlined,
+                  color: Colors.white38,
+                  size: 64,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// DC-34 위협 자동 차단 오버레이 — CDP watchdog이 블랙리스트 히트/다운로드 감지 시 표시
+  Widget _buildThreatOverlay() {
+    final isDownload = _threatReason == 'download_attempt';
+    return Container(
+      color: const Color(0xFF111827),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 48, 24, 32),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const Icon(Icons.gpp_bad_rounded, color: Color(0xFFDC2626), size: 56),
+            const SizedBox(height: 16),
+            const Text(
+              '위협 자동 차단됨',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              isDownload
+                  ? '악성 파일 다운로드 시도가 감지되어\n세션을 자동으로 차단했어요.'
+                  : '이동한 주소가 알려진 위험 사이트로\n확인되어 세션을 자동으로 차단했어요.',
+              style: const TextStyle(
+                color: Color(0xFF9CA3AF),
+                fontSize: 14,
+                height: 1.6,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            if (_filename.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF7F1D1D).withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFF991B1B)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.file_download_off_rounded,
+                        color: Color(0xFFFCA5A5), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '다운로드 차단 파일: $_filename',
+                        style: const TextStyle(
+                          color: Color(0xFFFCA5A5),
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (_screenshot != null) ...[
+              const SizedBox(height: 20),
+              // 타이틀 + "탭하여 확대" 힌트
+              Row(
+                children: [
+                  const Text(
+                    '차단 당시 사이트 화면',
+                    style: TextStyle(
+                      color: Color(0xFF6B7280),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const Spacer(),
+                  const Icon(Icons.zoom_in_rounded, color: Color(0xFF6B7280), size: 13),
+                  const SizedBox(width: 3),
+                  const Text(
+                    '탭하여 확대',
+                    style: TextStyle(color: Color(0xFF6B7280), fontSize: 11),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // 탭 → 전체화면(InteractiveViewer 핀치줌)
+              GestureDetector(
+                onTap: _openFullScreenShot,
+                child: Stack(
+                  alignment: Alignment.bottomRight,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.memory(
+                        base64Decode(_screenshot!),
+                        fit: BoxFit.contain,
+                        width: double.infinity,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      ),
+                    ),
+                    // 전체화면 힌트 배지
+                    Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.zoom_out_map_rounded, color: Colors.white, size: 11),
+                            SizedBox(width: 4),
+                            Text('전체화면', style: TextStyle(color: Colors.white, fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 28),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _exitWithVote,
+                icon: const Icon(Icons.home_rounded),
+                label: const Text('메인으로 돌아가기'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

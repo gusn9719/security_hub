@@ -159,8 +159,10 @@ async def browse_create(http_request: Request, request: BrowseCreateRequest) -> 
         raise HTTPException(status_code=503, detail=result["error"])
 
     container_id = result["container_id"]
-    # DC-27: per-session 비밀번호 (세션 생성 시 browse_service가 생성·저장)
-    vnc_pw = browse_service._active_sessions[container_id]["vnc_pw"]
+    # DC-27: per-session 비밀번호 — _active_sessions 재접근 금지
+    # watchdog이 create 반환 직전에 세션을 terminate하면 KeyError가 발생하므로
+    # create_browse_session이 반환한 값에서 직접 읽는다.
+    vnc_pw = result["vnc_pw"]
 
     # ── Cloudflare Tunnel / 리버스 프록시 대응 스킴·포트 감지 ─────────────────
     # 우선순위: 환경변수 BASE_URL > X-Forwarded-Proto 헤더 > FORCE_HTTPS 플래그 > 로컬 추론
@@ -211,6 +213,52 @@ async def browse_create(http_request: Request, request: BrowseCreateRequest) -> 
         "container_id": container_id,
         "novnc_url": novnc_url,
         "network_name": result["network_name"],
+    }
+
+
+@router.get("/browse/{container_id}/status")
+async def browse_status(container_id: str) -> dict:
+    """
+    7-A 세션의 상태를 반환한다. Flutter가 5초 간격으로 폴링해 위협 자동 차단을 감지한다.
+
+    DC-34: CDP watchdog이 위협을 감지하면 _threat_cache에 기록하고 세션을 종료한다.
+    Flutter는 threat_detected=True를 받으면 위협 차단 오버레이를 표시한다.
+
+    Returns:
+        dict:
+          active         — 세션 활성 여부
+          threat_detected — 위협 자동 감지 여부 (True이면 세션 강제 종료됨)
+          threat_reason  — "blacklist_hit" | "download_attempt" | ""
+          threat_url     — 위협 URL (있는 경우)
+    """
+    threat = browse_service._threat_cache.get(container_id)
+    if threat:
+        return {
+            "active": False,
+            "threat_detected": True,
+            "threat_reason": threat.get("threat_reason", ""),
+            "threat_url": threat.get("threat_url", ""),
+            "filename": threat.get("filename", ""),
+            "screenshot": threat.get("screenshot") or "",
+        }
+
+    if container_id in browse_service._active_sessions:
+        return {
+            "active": True,
+            "threat_detected": False,
+            "threat_reason": "",
+            "threat_url": "",
+            "filename": "",
+            "screenshot": "",
+        }
+
+    return {
+        "active": False,
+        "threat_detected": False,
+        "threat_reason": "",
+        "threat_url": "",
+        "filename": "",
+        "screenshot": "",
     }
 
 
