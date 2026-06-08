@@ -153,18 +153,22 @@ class AnalysisService:
         primary_url = expanded_urls[0]
         registered = get_registered_domain(primary_url)
 
-        # ── 3단계: 블랙리스트 매칭 ────────────────────────────────────────
+        # ── 3a단계: url_hash 전용 블랙리스트 매칭 ───────────────────────
+        # 정확 일치(1순위)만 먼저 체크. domain/registered_domain(2·3순위) 매칭은
+        # 화이트리스트 체크(4단계) 이후 3b단계에서 수행한다.
+        # Fix: whitelisted_safe DANGER 오판 방지 — naver.com/kakao.com 등
+        # 등록 도메인이 블랙리스트에 있어도 화이트리스트 도메인이 먼저 보호됨.
         # P0-3: SQLite I/O 도 동기 — to_thread 로 분리.
         try:
-            hit = await asyncio.to_thread(check_blacklist, expanded_urls)
+            hit = await asyncio.to_thread(check_blacklist, expanded_urls, True)
         except Exception as e:
-            logger.error("[블랙리스트] 조회 오류 — %s", e)
+            logger.error("[블랙리스트] url_hash 조회 오류 — %s", e)
             hit = None
 
         if hit:
             category = hit.get("category")
             cards = build_blacklist_cards(category)
-            logger.warning("[파이프라인] 블랙리스트 DANGER — category=%s", category)
+            logger.warning("[파이프라인] 블랙리스트 DANGER (url_hash) — category=%s", category)
             _schedule_history(
                 url=primary_url, verdict="danger", registered=registered,
             )
@@ -241,6 +245,30 @@ class AnalysisService:
                 title="의심스러운 링크입니다",
                 description=cards_to_text(cards),
                 action_label="가상환경에서 테스트",
+                cards=cards,
+            )
+
+        # ── 3b단계: domain/registered_domain 블랙리스트 매칭 ────────────
+        # 화이트리스트 미히트(또는 open_redirect) URL에 대해 2·3순위 매칭 수행.
+        # 화이트리스트 통과 후 실행되므로 whitelisted_safe DANGER 오판 없음.
+        try:
+            hit = await asyncio.to_thread(check_blacklist, expanded_urls)
+        except Exception as e:
+            logger.error("[블랙리스트] domain/reg_domain 조회 오류 — %s", e)
+            hit = None
+
+        if hit:
+            category = hit.get("category")
+            cards = build_blacklist_cards(category)
+            logger.warning("[파이프라인] 블랙리스트 DANGER (domain/reg) — category=%s", category)
+            _schedule_history(
+                url=primary_url, verdict="danger", registered=registered,
+            )
+            return AnalyzeResponse(
+                status=RiskStatus.DANGER,
+                title="위험한 링크입니다",
+                description=cards_to_text(cards),
+                action_label="발신번호 차단하기",
                 cards=cards,
             )
 

@@ -21,6 +21,44 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# 단축 URL 서비스 도메인 (BL-FP-001)
+# - domain / registered_domain 2·3순위 매칭에서 이 도메인은 건너뛴다.
+# - url_hash(1순위) 매칭은 그대로 적용된다 — 정확한 경로가 등재된 경우 차단 유지.
+# - url_expander.SHORT_URL_DOMAINS 와 동기화 유지. 추가 서비스(forms.gle, naver.me)는
+#   C-TAS 등재 이력이 확인되어 도메인 레벨 FP 위험이 있는 것만 포함한다.
+# =============================================================================
+_SHORT_URL_PROVIDERS: frozenset[str] = frozenset({
+    # url_expander.SHORT_URL_DOMAINS 동기화 목록
+    "bit.ly",
+    "w0q.de",
+    "ph.link",
+    "alie.kr",
+    "t.ly",
+    "l1nq.com",
+    "qrco.de",
+    "han.gl",
+    "me2.do",
+    "url.kr",
+    "is.gd",
+    "tinyurl.com",
+    "ow.ly",
+    "rebrand.ly",
+    # C-TAS 등재 이력 확인된 추가 서비스
+    "forms.gle",
+    "naver.me",
+    "goo.gl",
+})
+
+# 단축 URL 서비스 도메인의 registered_domain 집합 — 3순위 매칭 보호용
+# (예: forms.gle → 등록 도메인도 forms.gle 자체이므로 포함)
+# get_registered_domain 은 파일 상단에서 이미 임포트됨.
+_SHORT_URL_PROVIDER_REG_DOMAINS: frozenset[str] = frozenset(filter(None, (
+    get_registered_domain(f"https://{d}/")
+    for d in _SHORT_URL_PROVIDERS
+)))
+
+
+# =============================================================================
 # 알려진 TLD 목록
 # - 합법 TLD + C-TAS 블랙리스트에 자주 등장하는 신규 gTLD를 포함한다.
 # - 프로토콜 없는 도메인을 추출할 때 false positive를 최소화하는 화이트리스트 역할.
@@ -169,7 +207,7 @@ def compute_url_hash(url: str) -> str:
 # 블랙리스트 조회 서비스
 # =============================================================================
 
-def check_blacklist(urls: list[str]) -> dict | None:
+def check_blacklist(urls: list[str], hash_only: bool = False) -> dict | None:
     """
     URL 리스트를 블랙리스트 DB와 대조한다.
 
@@ -181,6 +219,8 @@ def check_blacklist(urls: list[str]) -> dict | None:
       첫 번째 히트 발생 시 즉시 반환
 
     [urls]: extract_urls() 결과 (또는 단축 URL 해제 후 정규화된 URL 리스트)
+    [hash_only]: True이면 1순위(url_hash) 매칭만 수행 — 화이트리스트 체크 전
+                 3a단계에서 사용. Fix: whitelisted_safe DANGER 오판 방지.
     반환값: 히트된 row 딕셔너리 | None (미스 시)
     """
     if not urls:
@@ -206,7 +246,10 @@ def check_blacklist(urls: list[str]) -> dict | None:
                 return dict(row)
 
             # ── 2순위: domain 일치 ────────────────────────────────────────
-            if domain:
+            # hash_only=True 시 생략 — 화이트리스트 체크 전 3a단계에서 호출될 때.
+            # Fix BL-FP-001: 단축 URL 서비스 도메인은 domain 레벨 매칭 제외.
+            # url_hash(1순위) 히트는 이미 위에서 처리됨 — 정확한 경로 차단은 유지.
+            if not hash_only and domain and domain not in _SHORT_URL_PROVIDERS:
                 row = conn.execute(
                     "SELECT * FROM blacklist WHERE domain = ? LIMIT 1",
                     (domain,),
@@ -216,9 +259,12 @@ def check_blacklist(urls: list[str]) -> dict | None:
                     return dict(row)
 
             # ── 3순위: registered_domain 일치 ────────────────────────────
+            # hash_only=True 시 생략 — 화이트리스트 체크 전 3a단계에서 호출될 때.
             # 피싱 도메인은 서브도메인만 바꿔 재사용하는 경우가 많으므로
             # 등록 도메인 단위로 차단. domain 과 중복 체크 방지.
-            if reg_domain and reg_domain != domain:
+            # Fix BL-FP-001: 단축 URL 서비스의 registered_domain도 제외
+            # (예: forms.gle → google.com 이 블랙리스트에 있어도 전체 Google 차단 방지).
+            if not hash_only and reg_domain and reg_domain != domain and reg_domain not in _SHORT_URL_PROVIDER_REG_DOMAINS:
                 row = conn.execute(
                     "SELECT * FROM blacklist WHERE registered_domain = ? LIMIT 1",
                     (reg_domain,),
