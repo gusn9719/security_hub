@@ -820,8 +820,8 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
-              Padding(
+              if (result.status != RiskStatus.danger) const SizedBox(height: 20),
+              if (result.status != RiskStatus.danger) Padding(
                 padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
                 child: SizedBox(
                   width: double.infinity,
@@ -879,27 +879,6 @@ class _HomeScreenState extends State<HomeScreen>
                                   }
                                 },
                                 child: const Text('이동하기', style: TextStyle(color: Color(0xFF0F9B58), fontWeight: FontWeight.bold)),
-                              ),
-                            ],
-                          ),
-                        );
-                      } else if (result.status == RiskStatus.danger) {
-                        showDialog(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                            title: const Row(
-                              children: [
-                                Icon(Icons.block, color: Color(0xFFDC2626)),
-                                SizedBox(width: 8),
-                                Text('발신번호 차단', style: TextStyle(fontSize: 18)),
-                              ],
-                            ),
-                            content: const Text('차단 기능은 추후 구현될 예정입니다.'),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(ctx),
-                                child: const Text('닫기'),
                               ),
                             ],
                           ),
