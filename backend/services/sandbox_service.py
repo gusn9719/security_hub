@@ -646,7 +646,8 @@ async def run_auto_test(url: str) -> dict:
         # 격리 네트워크 생성
         network = await asyncio.to_thread(_create_sandbox_network, client)
 
-        # 2. 컨테이너 기동 (127.0.0.1 바인딩, 메모리 512m, CPU 0.5)
+        # 2. 컨테이너 기동 (127.0.0.1 바인딩, 메모리 512m, CPU 0.5,
+        #    Linux capabilities 전부 제거 + 권한 상승 차단 + 프로세스 수 제한)
         logger.info("[자동탐지] 컨테이너 기동 중: %s", BROWSERLESS_IMAGE)
         container = await asyncio.to_thread(
             client.containers.run,
@@ -659,6 +660,9 @@ async def run_auto_test(url: str) -> dict:
             extra_hosts={"host.docker.internal": "0.0.0.0"},
             mem_limit="512m",
             nano_cpus=int(0.5 * 1e9),
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges"],
+            pids_limit=128,
         )
 
         await asyncio.to_thread(container.reload)

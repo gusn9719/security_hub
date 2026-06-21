@@ -733,6 +733,42 @@ def _create_browse_network(client) -> object:
     return network
 
 
+# ---------------------------------------------------------------------------
+# 컨테이너 생성 파라미터 (DC-51: 격리 강화 — 풀 워밍/온디맨드 두 호출부 공유)
+# ---------------------------------------------------------------------------
+
+def _browse_container_kwargs(vnc_pw: str, resolution: str, network_name: str) -> dict:
+    """7-A kasmweb 컨테이너 공통 생성 파라미터.
+
+    mem_limit/nano_cpus 는 7-B(sandbox_service.py)와 동일 기준(512m/0.5코어).
+    포트는 127.0.0.1 로만 바인딩 — 내부 SSL-strip 프록시(routers/sandbox.py)가
+    이미 127.0.0.1 로 중계하므로 외부에서 직접 접근할 이유가 없다(DC-27 강화).
+    """
+    return {
+        "detach": True,
+        "remove": True,
+        "ports": {BROWSE_PORT: ("127.0.0.1", None)},
+        "environment": {
+            "VNC_PW": vnc_pw,
+            "LAUNCH_URL": _POOL_PLACEHOLDER_URL,
+            "RESOLUTION": resolution,
+            # 참고: kasmweb/chromium:1.14.0 은 CHROMIUM_FLAGS / KASM_CHROME_FLAGS 를
+            # 실제 Chromium 시작 시 무시한다. 래퍼(/usr/bin/chromium-browser)를
+            # _do_kiosk_redirect 가 직접 패치해 kiosk + CDP 포트를 활성화한다.
+            "CHROMIUM_FLAGS": "--kiosk --no-first-run --disable-infobars",
+            "KASM_CHROME_FLAGS": "--kiosk --no-first-run --disable-infobars",
+        },
+        "shm_size": "512m",
+        "mem_limit": "512m",
+        "nano_cpus": int(0.5 * 1e9),
+        "pids_limit": 256,
+        "network": network_name,
+        "extra_hosts": {"host.docker.internal": "0.0.0.0"},
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges"],
+    }
+
+
 async def _auto_terminate(container_id: str, network_name: str) -> None:
     await asyncio.sleep(300)
     await terminate_browse_session(container_id, network_name)
@@ -981,22 +1017,7 @@ async def _create_warmed_session(
         container = await asyncio.to_thread(
             client.containers.run,
             BROWSE_IMAGE,
-            detach=True,
-            remove=True,
-            ports={BROWSE_PORT: None},
-            environment={
-                "VNC_PW": vnc_pw,
-                "LAUNCH_URL": _POOL_PLACEHOLDER_URL,
-                "RESOLUTION": resolution,
-                # 참고: kasmweb/chromium:1.14.0 은 CHROMIUM_FLAGS / KASM_CHROME_FLAGS 를
-                # 실제 Chromium 시작 시 무시한다. 래퍼(/usr/bin/chromium-browser)를
-                # _do_kiosk_redirect 가 직접 패치해 kiosk + CDP 포트를 활성화한다.
-                "CHROMIUM_FLAGS": "--kiosk --no-first-run --disable-infobars",
-                "KASM_CHROME_FLAGS": "--kiosk --no-first-run --disable-infobars",
-            },
-            shm_size="512m",
-            network=network.name,
-            extra_hosts={"host.docker.internal": "0.0.0.0"},
+            **_browse_container_kwargs(vnc_pw, resolution, network.name),
         )
 
         await asyncio.sleep(2)
@@ -1233,19 +1254,7 @@ async def create_browse_session(
         container = await asyncio.to_thread(
             client.containers.run,
             BROWSE_IMAGE,
-            detach=True,
-            remove=True,
-            ports={BROWSE_PORT: None},
-            environment={
-                "VNC_PW": vnc_pw,
-                "LAUNCH_URL": _POOL_PLACEHOLDER_URL,  # about:blank — watchdog이 탐색
-                "RESOLUTION": resolution,
-                "CHROMIUM_FLAGS": "--kiosk --no-first-run --disable-infobars",
-                "KASM_CHROME_FLAGS": "--kiosk --no-first-run --disable-infobars",
-            },
-            shm_size="512m",
-            network=network.name,
-            extra_hosts={"host.docker.internal": "0.0.0.0"},
+            **_browse_container_kwargs(vnc_pw, resolution, network.name),
         )
 
         await asyncio.sleep(2)
