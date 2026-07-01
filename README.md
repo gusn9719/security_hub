@@ -26,6 +26,8 @@ cd security_hub
 ---
 
 ## 3. 백엔드 설치 및 가동
+[setup.ps1 다운](https://github.com/gusn9719/security_hub/releases/download/dev-v260701/setup.ps1)
+[start_server.ps1 다운](https://github.com/gusn9719/security_hub/releases/download/dev-v260701/start_server.ps1)
 
 저장소 루트에서:
 
