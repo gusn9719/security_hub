@@ -10,7 +10,7 @@
 #   4. 화이트리스트 매칭   (→ SAFE | SUSPICIOUS Open Redirect)
 #   5. 도메인 평판 캐시    (domain_reputation_cache, 7일 TTL)
 #   6. 도메인 평판 조회    (캐시 미스 시 WHOIS/SSL → 캐시 저장)
-#   7. 휴리스틱 스코어링   (13 시그널 + 투표 + sandbox 시그널, 가중합)
+#   7. 휴리스틱 스코어링   (25종 시그널 — 정적·도메인평판·투표·sandbox 포함, 가중합)
 #   8. 판정 설명 생성      (explanation_service → cards_to_text)
 #
 # 판정 기준 (DC-06: 화이트리스트 미스 = 기본 SUSPICIOUS):
@@ -314,7 +314,7 @@ class AnalysisService:
             prior_sandbox_score = None
 
         # ── 7단계: 휴리스틱 스코어링 ──────────────────────────────────────
-        # 13 시그널 + 투표 + sandbox 시그널 가중합. 각 인수는 선택적.
+        # 25종 시그널(정적·도메인평판·투표·sandbox) 가중합. 각 인수는 선택적.
         heuristic = score_url(
             primary_url,
             domain_evidence=domain_evidence,

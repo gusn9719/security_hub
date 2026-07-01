@@ -6,6 +6,7 @@
 #   - Sprint 5E: 최대 3-hop 체인 추적 추가, SSRF 방어(사설 IP 사전 차단)
 # =============================================================================
 
+import ipaddress
 import logging
 import requests
 from urllib.parse import urlparse
@@ -66,6 +67,59 @@ def is_short_url(url: str) -> bool:
     return host in SHORT_URL_DOMAINS
 
 
+def _normalize_ip_host(host: str) -> str:
+    """
+    비표준 IP 표기(10진수 정수, 16진수, 8진수)를 표준 dotted-decimal로 변환한다.
+
+    Fix: decimal/hex/octal IP bypass — ipaddress.ip_address()는 이 표기들을 거부해
+    is_private_ip()가 False를 반환함으로써 SSRF 방어를 우회할 수 있었음.
+
+    변환 예:
+      "2130706433"  → "127.0.0.1"   (10진수 정수)
+      "0x7f000001"  → "127.0.0.1"   (16진수)
+      "0177.0.0.1"  → "127.0.0.1"   (8진수 옥텟)
+
+    변환 실패(일반 도메인명 등) 시 원본 문자열 반환.
+
+    [host]: URL에서 파싱된 호스트 문자열
+    반환값: 정규화된 dotted-decimal IP 또는 원본 host
+    """
+    if not host:
+        return host
+
+    # 이미 표준 dotted-decimal이거나 IPv6이면 그대로 반환
+    if "." in host or ":" in host:
+        # 8진수 옥텟 처리 (예: "0177.0.0.1" → "127.0.0.1")
+        parts = host.split(".")
+        if len(parts) == 4:
+            try:
+                normalized_octets = []
+                has_octal = False
+                for part in parts:
+                    if part.startswith("0") and len(part) > 1 and not part.startswith("0x"):
+                        # 8진수 옥텟
+                        normalized_octets.append(str(int(part, 8)))
+                        has_octal = True
+                    else:
+                        normalized_octets.append(str(int(part, 0)))
+                if has_octal:
+                    return ".".join(normalized_octets)
+            except (ValueError, OverflowError):
+                pass
+        return host
+
+    # 단일 숫자형 IP: 10진수, 16진수(0x...), 8진수(0o... 또는 0...)
+    try:
+        # int() with base=0 이 0x.../0o.../0b... 자동 감지; 순수 10진수도 처리
+        int_val = int(host, 0) if host.lower().startswith(("0x", "0o", "0b")) else int(host)
+        addr = ipaddress.ip_address(int_val)
+        return str(addr)
+    except (ValueError, OverflowError):
+        pass
+
+    return host
+
+
 def _is_safe_to_request(url: str) -> bool:
     """
     HTTP 요청을 보내기 전 SSRF 방어 검사를 수행한다.
@@ -80,7 +134,9 @@ def _is_safe_to_request(url: str) -> bool:
         hostname = urlparse(url).hostname or ""
     except Exception:
         return True  # 파싱 실패는 requests 단계에서 처리
-    return not is_private_ip(hostname)
+    # Fix: decimal/hex/octal IP bypass — 비표준 IP 표기를 정규화한 뒤 검사
+    normalized = _normalize_ip_host(hostname)
+    return not is_private_ip(normalized)
 
 
 def expand_url(url: str, timeout: int = 5) -> str:

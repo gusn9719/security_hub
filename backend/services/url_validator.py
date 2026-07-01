@@ -155,7 +155,8 @@ def check_userinfo_injection(url: str) -> bool:
     반환값: True = userinfo 컴포넌트 감지 (사칭 의심)
     """
     try:
-        parsed = urlparse(url)
+        # Fix: decode %40 → @ before parsing so percent-encoded userinfo is detected
+        parsed = urlparse(unquote(url))
         return bool(parsed.username)
     except Exception:
         return False
