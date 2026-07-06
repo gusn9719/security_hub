@@ -1,5 +1,50 @@
 # Security Hub
-AI기반 피싱 탐지 및 가상 환경 테스트 앱 | 한이음 ICT 드림업 2026  
+
+AI 기반 피싱 탐지 및 가상 샌드박스 테스트 앱 | 한이음 ICT 드림업 2026
+
+의심스러운 URL/문자를 실제로 클릭하지 않고도 안전하게 분석·체험할 수 있게 해주는 모바일 앱입니다. 백엔드가 URL을 평판·유사도·휴리스틱 점수로 분석하고, 필요하면 Docker 기반 가상 샌드박스에서 페이지를 대신 열어 위험 요소(비밀번호 입력, 파일 다운로드, 리다이렉트 등)를 시각적으로 보여줍니다.
+
+## 주요 기능
+
+- **URL/문자 피싱 분석**: 짧은 URL 확장, 도메인 평판(C-TAS·화이트리스트) 조회, 도메인 유사도(타이포스쿼팅) 검사, 휴리스틱 스코어링을 종합해 위험도 판정
+- **AI 위험 요약**: Google Gemini로 분석 결과를 사람이 읽기 쉬운 요약으로 설명
+- **가상 샌드박스**: Docker + Playwright로 의심 URL을 격리된 환경에서 대신 열어 캡처링 없이 안전하게 미리보기 (비밀번호 입력창, 강제 다운로드, 리다이렉트 체인 등 실제 피싱 패턴 5종 테스트 페이지 포함)
+- **SMS 연동 분석**: 안드로이드 SMS 수신을 감지해 문자 속 링크를 바로 분석 화면으로 전달
+- **카카오 소셜 로그인 + JWT 인증**
+- **보안 하드닝**: TRACE/CONNECT/TRACK 등 위험 HTTP 메서드 차단, 보안 응답 헤더, 전역 예외 처리로 스택트레이스 미노출, 만료 캐시 자동 정리
+
+## 아키텍처
+
+```
+frontend (Flutter, Android/iOS/Web)
+  └─ Kakao Login, SMS Picker, Sandbox WebView
+        │  REST (JWT)
+        ▼
+backend (FastAPI)
+  ├─ routers   : auth / analyze / sandbox / test_phishing
+  ├─ services  : gemini, domain_reputation, domain_similarity,
+  │              heuristic_scorer, url_expander, sandbox(Docker+Playwright)
+  └─ database  : user / analysis_history / blacklist / whitelist / vote
+        │
+        ▼
+  Docker 격리 샌드박스 컨테이너
+```
+
+세부 설계는 [`docs/`](docs) 폴더의 ERD, 시스템 구성도, 유즈케이스 다이어그램, 샌드박스 하드닝 문서를 참고하세요.
+
+## 기술 스택
+
+| 영역 | 스택 |
+|---|---|
+| Backend | Python 3.11, FastAPI, Uvicorn, Pydantic, PyJWT |
+| AI | Google Gemini API (`google-genai`) |
+| 샌드박스 | Docker, Playwright |
+| 인증 | Kakao OAuth, JWT |
+| 도메인 분석 | python-whois, tldextract |
+| Frontend | Flutter (Android/iOS/Web/Desktop), flutter_inappwebview, kakao_flutter_sdk |
+| 테스트 | pytest (백엔드), flutter_test (프론트엔드) |
+
+---
 
 # 환경설정방법   
 
@@ -61,4 +106,4 @@ APK 다운로드 : https://github.com/gusn9719/security_hub/releases/download/de
 1. PC에 ADB(Android SDK 플랫폼 도구) 설치(https://developer.android.com/tools/releases/platform-tools?hl=ko)  
 2. 에뮬레이터에서 USB 디버깅 활성화
 3. PC 터미널 실행 후 ADB 설치 폴더로 이동  
-4. adb install app-release.apk 입력  
+4. adb install app-release.apk 입력
