@@ -1,0 +1,191 @@
+<svg viewBox="0 0 990 750" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="flowArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a8a8a"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="990" height="750" fill="#ffffff"/>
+
+  <!-- ========================= blacklist ========================= -->
+  <g>
+    <rect x="20" y="20" width="190" height="194" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="115" y="38" text-anchor="middle" font-size="13" font-weight="700">blacklist</text>
+    <line x1="20" y1="46" x2="210" y2="46" stroke="#333333" stroke-width="1"/>
+    <text x="30" y="59" font-size="12" font-weight="700" text-decoration="underline">id</text>
+    <text x="200" y="59" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <line x1="20" y1="64" x2="210" y2="64" stroke="#333333" stroke-width="0.75"/>
+    <text x="30" y="77" font-size="12">url_hash</text><text x="200" y="77" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="95" font-size="12">url</text><text x="200" y="95" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="113" font-size="12">domain</text><text x="200" y="113" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="131" font-size="12">registered_domain</text><text x="200" y="131" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="149" font-size="12">source</text><text x="200" y="149" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="167" font-size="12">reported_at</text><text x="200" y="167" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="185" font-size="12">category</text><text x="200" y="185" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="203" font-size="12">raw_message</text><text x="200" y="203" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+  </g>
+
+  <!-- ========================= whitelist ========================= -->
+  <g>
+    <rect x="20" y="234" width="190" height="194" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="115" y="252" text-anchor="middle" font-size="13" font-weight="700">whitelist</text>
+    <line x1="20" y1="260" x2="210" y2="260" stroke="#333333" stroke-width="1"/>
+    <text x="30" y="273" font-size="12" font-weight="700" text-decoration="underline">id</text>
+    <text x="200" y="273" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <line x1="20" y1="278" x2="210" y2="278" stroke="#333333" stroke-width="0.75"/>
+    <text x="30" y="291" font-size="12">domain</text><text x="200" y="291" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="309" font-size="12">registered_domain</text><text x="200" y="309" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="327" font-size="12">category</text><text x="200" y="327" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="345" font-size="12">match_mode</text><text x="200" y="345" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="363" font-size="12">risk_level</text><text x="200" y="363" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="381" font-size="12">note</text><text x="200" y="381" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="399" font-size="12">source</text><text x="200" y="399" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="417" font-size="12">added_at</text><text x="200" y="417" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+  </g>
+
+  <!-- ================= domain_reputation_cache ================= -->
+  <g>
+    <rect x="20" y="448" width="210" height="230" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="125" y="466" text-anchor="middle" font-size="13" font-weight="700">domain_reputation_cache</text>
+    <line x1="20" y1="474" x2="230" y2="474" stroke="#333333" stroke-width="1"/>
+    <text x="30" y="487" font-size="12" font-weight="700" text-decoration="underline">id</text>
+    <text x="220" y="487" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <line x1="20" y1="492" x2="230" y2="492" stroke="#333333" stroke-width="0.75"/>
+    <text x="30" y="505" font-size="12">registered_domain</text><text x="220" y="505" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="523" font-size="12">domain_age_days</text><text x="220" y="523" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="541" font-size="12">new_domain</text><text x="220" y="541" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="559" font-size="12">ssl_valid</text><text x="220" y="559" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="577" font-size="12">ssl_issued_days</text><text x="220" y="577" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="595" font-size="12">fresh_infrastructure</text><text x="220" y="595" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="613" font-size="12">whois_no_record</text><text x="220" y="613" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="631" font-size="12">skipped</text><text x="220" y="631" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="30" y="649" font-size="12">cached_at</text><text x="220" y="649" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="30" y="667" font-size="12">expires_at</text><text x="220" y="667" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+  </g>
+
+  <!-- ========================= users ========================= -->
+  <g>
+    <rect x="250" y="20" width="190" height="140" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="345" y="38" text-anchor="middle" font-size="13" font-weight="700">users</text>
+    <line x1="250" y1="46" x2="440" y2="46" stroke="#333333" stroke-width="1"/>
+    <text x="260" y="59" font-size="12" font-weight="700" text-decoration="underline">id</text>
+    <text x="430" y="59" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <line x1="250" y1="64" x2="440" y2="64" stroke="#333333" stroke-width="0.75"/>
+    <text x="260" y="77" font-size="12">kakao_id</text><text x="430" y="77" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="95" font-size="12">nickname</text><text x="430" y="95" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="113" font-size="12">email</text><text x="430" y="113" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="131" font-size="12">created_at</text><text x="430" y="131" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="149" font-size="12">last_login_at</text><text x="430" y="149" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+  </g>
+
+  <!-- ========================= url_votes ========================= -->
+  <g>
+    <rect x="250" y="180" width="190" height="212" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="345" y="198" text-anchor="middle" font-size="13" font-weight="700">url_votes</text>
+    <line x1="250" y1="206" x2="440" y2="206" stroke="#333333" stroke-width="1"/>
+    <text x="260" y="219" font-size="12" font-weight="700" text-decoration="underline">id</text>
+    <text x="430" y="219" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <line x1="250" y1="224" x2="440" y2="224" stroke="#333333" stroke-width="0.75"/>
+    <text x="260" y="237" font-size="12">url_hash</text><text x="430" y="237" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="255" font-size="12">url</text><text x="430" y="255" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="273" font-size="12">vote</text><text x="430" y="273" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="291" font-size="12">voted_at</text><text x="430" y="291" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="309" font-size="12">session_id</text><text x="430" y="309" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="327" font-size="12">device_uuid</text><text x="430" y="327" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="345" font-size="12">domain</text><text x="430" y="345" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="363" font-size="12">registered_domain</text><text x="430" y="363" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="260" y="381" font-size="12" font-style="italic">user_id (FK)</text><text x="430" y="381" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+  </g>
+
+  <!-- ========================= sandbox_results ========================= -->
+  <g>
+    <rect x="480" y="20" width="220" height="320" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="590" y="38" text-anchor="middle" font-size="13" font-weight="700">sandbox_results</text>
+    <line x1="480" y1="46" x2="700" y2="46" stroke="#333333" stroke-width="1"/>
+    <text x="490" y="59" font-size="12" font-weight="700" text-decoration="underline">session_id</text>
+    <text x="690" y="59" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <line x1="480" y1="64" x2="700" y2="64" stroke="#333333" stroke-width="0.75"/>
+    <text x="490" y="77" font-size="12">url_hash</text><text x="690" y="77" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="95" font-size="12">url</text><text x="690" y="95" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="113" font-size="12">mode</text><text x="690" y="113" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="131" font-size="12">domain</text><text x="690" y="131" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="149" font-size="12">registered_domain</text><text x="690" y="149" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="167" font-size="12">visited_urls</text><text x="690" y="167" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="185" font-size="12">findings</text><text x="690" y="185" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="203" font-size="12">sandbox_score</text><text x="690" y="203" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="490" y="221" font-size="12">summary</text><text x="690" y="221" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="239" font-size="12">screenshots</text><text x="690" y="239" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="257" font-size="12">final_url</text><text x="690" y="257" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="275" font-size="12">redirect_count</text><text x="690" y="275" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="490" y="293" font-size="12">error</text><text x="690" y="293" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="311" font-size="12">analyzed_at</text><text x="690" y="311" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="490" y="329" font-size="12">expires_at</text><text x="690" y="329" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+  </g>
+
+  <!-- ========================= analysis_history ========================= -->
+  <g>
+    <rect x="740" y="20" width="210" height="248" fill="#ffffff" stroke="#333333" stroke-width="1"/>
+    <text x="845" y="38" text-anchor="middle" font-size="13" font-weight="700">analysis_history</text>
+    <line x1="740" y1="46" x2="950" y2="46" stroke="#333333" stroke-width="1"/>
+    <text x="750" y="59" font-size="12" font-weight="700" text-decoration="underline">id</text>
+    <text x="940" y="59" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <line x1="740" y1="64" x2="950" y2="64" stroke="#333333" stroke-width="0.75"/>
+    <text x="750" y="77" font-size="12">url_hash</text><text x="940" y="77" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="750" y="95" font-size="12">url</text><text x="940" y="95" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="750" y="113" font-size="12">registered_domain</text><text x="940" y="113" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="750" y="131" font-size="12">verdict</text><text x="940" y="131" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="750" y="149" font-size="12">triggered_signals</text><text x="940" y="149" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="750" y="167" font-size="12">heuristic_score</text><text x="940" y="167" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="750" y="185" font-size="12">prior_vote_danger</text><text x="940" y="185" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="750" y="203" font-size="12">prior_vote_safe</text><text x="940" y="203" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="750" y="221" font-size="12">response_time_ms</text><text x="940" y="221" text-anchor="end" font-size="11" fill="#8a8a8a">int</text>
+    <text x="750" y="239" font-size="12">device_uuid</text><text x="940" y="239" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+    <text x="750" y="257" font-size="12">analyzed_at</text><text x="940" y="257" text-anchor="end" font-size="11" fill="#8a8a8a">text</text>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- 관계선 — Crow's Foot(까마귀발) 표기법. 실선=DB FK, 점선=비FK 논리적 조인 -->
+  <!-- ============================================================ -->
+
+  <!-- users.id (1) to url_votes.user_id (0..1), 실제 FK, 실선 -->
+  <line x1="345" y1="160" x2="345" y2="180" stroke="#444444" stroke-width="1.2"/>
+  <line x1="336" y1="164" x2="354" y2="164" stroke="#444444" stroke-width="1.2"/>
+  <circle cx="345" cy="171" r="3.2" fill="#ffffff" stroke="#444444" stroke-width="1.1"/>
+  <line x1="345" y1="180" x2="336" y2="174" stroke="#444444" stroke-width="1.2"/>
+  <line x1="345" y1="180" x2="345" y2="173" stroke="#444444" stroke-width="1.2"/>
+  <line x1="345" y1="180" x2="354" y2="174" stroke="#444444" stroke-width="1.2"/>
+
+  <!-- sandbox_results.session_id (1) to url_votes.session_id (0..1), 비FK, 점선 -->
+  <polyline points="480,59 460,59 460,309 440,309" fill="none" stroke="#8a8a8a" stroke-width="1.1" stroke-dasharray="4,3"/>
+  <line x1="474" y1="52" x2="474" y2="66" stroke="#8a8a8a" stroke-width="1.1"/>
+  <circle cx="452" cy="309" r="3" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+  <line x1="444" y1="302" x2="444" y2="316" stroke="#8a8a8a" stroke-width="1.1"/>
+
+  <!-- sandbox_results.registered_domain (0..N) to analysis_history.registered_domain (0..N), 비FK, 점선 -->
+  <polyline points="700,149 720,149 720,113 740,113" fill="none" stroke="#8a8a8a" stroke-width="1.1" stroke-dasharray="4,3"/>
+  <circle cx="712" cy="149" r="3" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+  <line x1="700" y1="149" x2="708" y2="149" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="700" y1="149" x2="706" y2="142" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="700" y1="149" x2="706" y2="156" stroke="#8a8a8a" stroke-width="1.1"/>
+  <circle cx="726" cy="113" r="3" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+  <line x1="740" y1="113" x2="732" y2="113" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="740" y1="113" x2="734" y2="106" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="740" y1="113" x2="734" y2="120" stroke="#8a8a8a" stroke-width="1.1"/>
+
+  <!-- url_votes.registered_domain (0..N) to analysis_history.registered_domain (0..N), 비FK, 점선, 아래로 우회 -->
+  <polyline points="440,363 462,363 462,400 845,400 845,268" fill="none" stroke="#8a8a8a" stroke-width="1.1" stroke-dasharray="4,3"/>
+  <circle cx="454" cy="363" r="3" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+  <line x1="440" y1="363" x2="448" y2="363" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="440" y1="363" x2="446" y2="356" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="440" y1="363" x2="446" y2="370" stroke="#8a8a8a" stroke-width="1.1"/>
+  <circle cx="845" cy="282" r="3" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+  <line x1="845" y1="268" x2="845" y2="276" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="845" y1="268" x2="838" y2="274" stroke="#8a8a8a" stroke-width="1.1"/>
+  <line x1="845" y1="268" x2="852" y2="274" stroke="#8a8a8a" stroke-width="1.1"/>
+
+  <!-- ========================= legend ========================= -->
+  <g font-size="11" fill="#555555">
+    <text x="20" y="698">PK = 굵게+밑줄 처리된 첫 행(테이블당 1개, 두 번째 구분선 위)</text>
+    <text x="20" y="714">실선 = DB 레벨 FK(users.id → url_votes.user_id) · 점선 = registered_domain/session_id 기준 앱 로직상 조인(DB 제약 없음)</text>
+    <text x="20" y="730" fill="#8a8a8a">까마귀발 표기: ─┤ 1  ⊙┤ 0..1  ⊙&lt; 0..N · blacklist/whitelist/domain_reputation_cache와의 나머지 조인은 선이 많아져 생략 — docs/ERD.md 표 참조</text>
+  </g>
+</svg>
