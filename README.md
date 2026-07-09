@@ -10,6 +10,7 @@
 
 - [프로젝트 소개](#프로젝트-소개)
 - [핵심 기능](#핵심-기능)
+- [시연 영상](#시연-영상)
 - [시스템 아키텍처](#시스템-아키텍처)
 - [기술 스택](#기술-스택)
 - [문서](#문서)
@@ -42,11 +43,19 @@
 | 카카오 소셜 로그인 | 비회원(익명 device_uuid)도 전 기능 사용 가능하되, 로그인 시 투표 신뢰도 가중치 상승(어뷰징 방지) |
 | 보안 하드닝 | TRACE/CONNECT/TRACK 등 위험 HTTP 메서드 차단, 보안 응답 헤더, 전역 예외 처리로 스택트레이스 미노출, 만료 캐시 자동 정리 |
 
+## 시연 영상
+
+문자를 받고, 문자 알림을 통해 자동으로 검사한 뒤, 의심 판정이 뜬 링크를 7-A 직접 탐방 샌드박스로 둘러보는 흐름입니다.
+
+<video src="https://github.com/gusn9719/security_hub/raw/main/docs/demo_suspicious_url_direct_browse.mp4" controls width="480"></video>
+
+(영상이 안 보이면 [docs/demo_suspicious_url_direct_browse.mp4](docs/demo_suspicious_url_direct_browse.mp4)를 직접 열어보세요.)
+
 ## 시스템 아키텍처
 
 ![시스템 구성도](docs/system_architecture.png)
 
-UI(파랑) → 서비스 로직(초록) → DB(노랑) 3계층 구조입니다. "의심사유 생성"은 사전 정의된 설명 카드 딕셔너리에서만 만들어지며(LLM 미사용, 할루시네이션 방지), 샌드박스 투표 결과가 다시 휴리스틱 스코어링에 피드백되는 순환 구조가 핵심입니다. 더 상세한 기술 버전은 [docs/system_architecture.md](docs/system_architecture.md)를, DB 스키마는 [docs/ERD.md](docs/ERD.md)를 참고하세요.
+UI(파랑) → 서비스 로직(초록) → DB(노랑) 3단 구조입니다. "의심사유 생성"은 Gemini 같은 LLM이 아니라 미리 정해둔 설명 문구를 골라 보여주는 방식이고, 샌드박스에서 남긴 투표가 다시 휴리스틱 스코어링에 반영되는 피드백 구조가 핵심입니다. 자세한 설명은 [docs/system_architecture.md](docs/system_architecture.md), DB 스키마는 [docs/ERD.md](docs/ERD.md)를 참고하세요.
 
 ## 기술 스택
 
@@ -63,12 +72,10 @@ UI(파랑) → 서비스 로직(초록) → DB(노랑) 3계층 구조입니다. 
 
 | 문서 | 내용 |
 |---|---|
-| [docs/system_architecture.md](docs/system_architecture.md) | 시스템 구성도 (Mermaid 상세 버전) |
+| [docs/system_architecture.md](docs/system_architecture.md) | 시스템 구성도 설명 |
 | [docs/ERD.md](docs/ERD.md) | DB ERD |
 | [docs/SRS.xlsx](docs/SRS.xlsx) | 요구사항 명세서 |
 | [docs/use_case_diagram.md](docs/use_case_diagram.md) | 유즈케이스 다이어그램 |
-| [docs/FINAL_REPORT.md](docs/FINAL_REPORT.md) | 최종 결과보고서 |
-| [docs/guide/](docs/guide/00_인덱스.md) | 기능별 상세 가이드 (분석 파이프라인, 샌드박스, 투표/인증 등) |
 | [docs/SETUP.md](docs/SETUP.md) | 개발자용 소스 빌드 셋업 가이드 |
 | [docs/REVIEWER_SETUP.md](docs/REVIEWER_SETUP.md) | 심사자용 빠른 시작 가이드 |
 
